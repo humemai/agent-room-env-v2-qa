@@ -10,6 +10,7 @@ import numpy as np
 import torch
 import torch.optim as optim
 from humemai.utils import is_running_notebook, write_yaml
+from humemai.policy import encode_all_observations, manage_memory
 from humemai.memory import EpisodicMemory, MemorySystems, SemanticMemory, ShortMemory
 from humemai.policy import answer_question, encode_observation, explore, manage_memory
 from room_env.envs.room2 import RoomEnv2
@@ -21,6 +22,7 @@ from .utils import (
     save_final_results,
     save_states_q_values_actions,
     save_validation,
+    select_action,
 )
 
 
@@ -213,9 +215,11 @@ class DQNAgent:
         self.dqn_target.load_state_dict(self.dqn.state_dict())
         self.dqn_target.eval()
 
-        self.replay_buffer = ReplayBuffer(
-            observation_type="dict", size=replay_buffer_size, batch_size=batch_size
-        )
+        self.replay_buffer = {}
+        for policy_type in ["mm", "qa", "explore"]:
+            self.replay_buffer[policy_type] = ReplayBuffer(
+                observation_type="dict", size=replay_buffer_size, batch_size=batch_size
+            )
 
         # optimizer
         self.optimizer = optim.Adam(self.dqn.parameters())
@@ -287,25 +291,113 @@ class DQNAgent:
             observations, action, reward, done, q_values
 
         """
+        states = {"mm": [], "qa": None, "explore": None}
+        actions = {"mm": [], "qa": None, "explore": None}
+        next_states = {"mm": [], "qa": None, "explore": None}
+        q_values = {"mm": [], "qa": None, "explore": None}
+
+        if save_to_replay_buffer:
+            transitions = {}
+            for policy_type in ["mm", "explore", "qa"]:
+                transitions[policy_type] = []
+
         if self.agent_to_episodic:
             agent_location_observations = []
-            remaining_observations = []
+            remaining_room_observations = []
 
             for obs in observations["room"]:
                 if obs[0] == "agent" and obs[1] == "atlocation":
                     agent_location_observations.append(obs)
                 else:
-                    remaining_observations.append(obs)
+                    remaining_room_observations.append(obs)
 
             if len(agent_location_observations) > 0:
                 for obs in agent_location_observations:
                     encode_observation(self.memory_systems, obs)
                     manage_memory(
                         self.memory_systems,
+                        "episodic",
                         split_possessive=False,
                     )
         else:
-            remaining_observations = observations["room"]
+            remaining_room_observations = observations["room"]
+
+        encode_all_observations(self.memory_systems, remaining_room_observations)
+
+        # Memory management policy. There are multiple agents for this policy.
+        num_mm_agents = len(remaining_room_observations)
+        working_memory = self.get_working_memory()
+
+        for idx in range(num_mm_agents):
+            state = deepcopy(working_memory) + idx
+
+            action, q_values_ = select_action(
+                state=state,
+                greedy=greedy,
+                gnn=self.gnn,
+                dqn=self.dqn["mm"],
+                epsilon=self.epsilon,
+                action_space=self.action_space["mm"],
+            )
+            states["mm"].append(state)
+            actions["mm"].append(action)
+            q_values["mm"].append(q_values_)
+
+        for state, action in zip(states["mm"], actions["mm"]):
+            manage_memory(
+                self.memory_systems,
+                self.action2str["mm"][action],
+                split_possessive=False,
+            )
+
+        long_term_memory = self.get_long_term_memory()
+
+        # Question answering policy. There is only one agent for this policy.
+        state = deepcopy(long_term_memory) + observations["questions"]
+        action, q_values_ = select_action(
+            state=state,
+            greedy=greedy,
+            gnn=self.gnn,
+            dqn=self.dqn["qa"],
+            epsilon=self.epsilon,
+            action_space=self.action_space["qa"],
+        )
+        states["qa"] = state
+        actions["qa"] = action
+        q_values["qa"] = q_values_
+
+        # Exploration policy. There is only one agent for this policy.
+        state = deepcopy(long_term_memory)
+        action, q_values_ = select_action(
+            state=state,
+            greedy=greedy,
+            gnn=self.gnn,
+            dqn=self.dqn["explore"],
+            epsilon=self.epsilon,
+            action_space=self.action_space["explore"],
+        )
+        states["explore"] = state
+        actions["explore"] = action
+        q_values["explore"] = q_values_
+
+        action_pair = (
+            self.action2str["qa"][actions["qa"]],
+            self.action2str["explore"][actions["explore"]],
+        )
+
+        (
+            observations,
+            reward,
+            done,
+            truncated,
+            info,
+        ) = self.env.step(action_pair)
+        done = done or truncated
+
+        # don't know how to handle this yet
+        next_states["mm"] = None
+        next_states["qa"] = None
+        next_states["explore"] = None
 
     def fill_replay_buffer(self) -> None:
         """Make the replay buffer full in the beginning with the uniformly-sampled
