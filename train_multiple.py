@@ -1,4 +1,5 @@
 """This script is to tran multiple train.py in parallel."""
+
 import datetime
 
 import matplotlib
@@ -15,9 +16,8 @@ import random
 import subprocess
 from copy import deepcopy
 
+from humemai.utils import write_yaml
 from tqdm.auto import tqdm
-
-from explicit_memory.utils import write_yaml
 
 # history_block_size = 6
 
@@ -34,7 +34,6 @@ params = {
     "gamma": 0.9,
     "history_block_size": None,
     "nn_params": {
-        "architecture": "lstm",
         "hidden_size": 128,
         "num_layers": 2,
         "embedding_dim": 128,
@@ -63,7 +62,7 @@ params = {
     "ddqn": True,
     "dueling_dqn": True,
     "default_root_dir": None,
-    # "default_root_dir": f"./training_results/baselines/dqn_lstm/history_block_size={history_block_size}",
+    # "default_root_dir": f"./training-results/baselines/dqn/history_block_size={history_block_size}",
     "run_handcrafted_baselines": True,
 }
 
@@ -79,9 +78,9 @@ for history_block_size in [1]:
         params["test_seed"] = test_seed
         params["train_seed"] = test_seed + 5
         params["history_block_size"] = history_block_size
-        params[
-            "default_root_dir"
-        ] = f"./training_results/baselines/dqn_lstm/history_block_size={history_block_size}"
+        params["default_root_dir"] = (
+            f"./training-results/baselines/dqn/history_block_size={history_block_size}"
+        )
 
         config_file_name = (
             f"./junks/{str(datetime.datetime.now()).replace(' ', '-')}.yaml"

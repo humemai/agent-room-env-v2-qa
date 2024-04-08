@@ -1,32 +1,35 @@
-"""DQN Agent for the RoomEnv2 environment.
+"""Agent that uses a GNN for its DQN, for the RoomEnv2 environment."""
 
-This should be inherited. This itself should not be used.
-"""
-
+import datetime
 import os
+from copy import deepcopy
+import shutil
 
 import gymnasium as gym
 import numpy as np
 import torch
 import torch.optim as optim
+from humemai.utils import is_running_notebook, write_yaml
+from humemai.memory import EpisodicMemory, MemorySystems, SemanticMemory, ShortMemory
+from humemai.policy import answer_question, encode_observation, explore, manage_memory
 from room_env.envs.room2 import RoomEnv2
 
-from explicit_memory.nn import LSTM
-from explicit_memory.utils.dqn import (
+from .nn import GNN
+from .utils import (
     ReplayBuffer,
     plot_results,
     save_final_results,
-    save_validation,
     save_states_q_values_actions,
+    save_validation,
 )
-from explicit_memory.utils import is_running_notebook, write_yaml
 
 
-from ..handcrafted import HandcraftedAgent
-
-
-class DQNAgent(HandcraftedAgent):
+class DQNAgent:
     """DQN Agent interacting with environment.
+
+    This is an upgrade from https://github.com/humemai/agent-room-env-v2-lstm.
+    All three policies (memory management, question answering, and exploration) are
+    learned by a GNN at once!
 
     Based on https://github.com/Curt-Park/rainbow-is-all-you-need/
     """
@@ -48,15 +51,13 @@ class DQNAgent(HandcraftedAgent):
             "semantic": 16,
             "short": 1,
         },
+        agent_to_episodic: bool = True,
         pretrain_semantic: str | bool = False,
         nn_params: dict = {
-            "architecture": "lstm",
             "hidden_size": 64,
             "num_layers": 2,
             "embedding_dim": 64,
             "make_categorical_embeddings": False,
-            "v1_params": None,
-            "v2_params": {},
             "memory_of_interest": [
                 "episodic",
                 "semantic",
@@ -88,8 +89,7 @@ class DQNAgent(HandcraftedAgent):
             "include_walls_in_observations": True,
         },
         ddqn: bool = True,
-        dueling_dqn: bool = True,
-        default_root_dir: str = "./training_results/DQN/",
+        default_root_dir: str = "./training-results/stochastic-objects/DQN/",
         run_handcrafted_baselines: bool = False,
     ) -> None:
         """Initialization.
@@ -106,6 +106,9 @@ class DQNAgent(HandcraftedAgent):
             min_epsilon: minimum epsilon
             gamma: discount factor
             capacity: The capacity of each human-like memory systems
+            agent_to_episodic: If true, the agent's location related observations will
+                be stored in its episodic memory system. If false, the agent decides
+                what to do with its memory management policy
             pretrain_semantic: whether to pretrain the semantic memory system.
             nn_params: parameters for the neural network (DQN)
             run_test: whether to run test
@@ -129,42 +132,64 @@ class DQNAgent(HandcraftedAgent):
                 room_size: The room configuration to use. Choose one of "dev", "xxs",
                     "xs", "s", "m", or "l".
             ddqn: whether to use double DQN
-            dueling_dqn: whether to use dueling DQN
             default_root_dir: default root directory to save results
             run_handcrafted_baselines: whether to run handcrafted baselines
 
         """
+        params_to_save = deepcopy(locals())
+        del params_to_save["self"]
+        self._create_directory(params_to_save)
+
         self.train_seed = train_seed
         self.test_seed = test_seed
         env_config["seed"] = self.train_seed
 
-        super().__init__(
-            env_str=env_str,
-            env_config=env_config,
-            mm_policy=mm_policy,
-            qa_policy=qa_policy,
-            explore_policy=explore_policy,
-            num_samples_for_results=num_samples_for_results,
-            capacity=capacity,
-            pretrain_semantic=pretrain_semantic,
-            default_root_dir=default_root_dir,
+        self.env_str = env_str
+        self.env_config = env_config
+        self.mm_policy = mm_policy
+        assert self.mm_policy in [
+            "random",
+            "episodic",
+            "semantic",
+            "generalize",
+            "rl",
+            "neural",
+        ]
+        self.qa_policy = qa_policy
+        assert self.qa_policy in [
+            "episodic_semantic",
+            "episodic",
+            "semantic",
+            "random",
+            "neural",
+        ]
+        self.explore_policy = explore_policy
+        assert self.explore_policy in [
+            "random",
+            "avoid_walls",
+            "new_room",
+            "rl",
+            "neural",
+        ]
+        self.num_samples_for_results = num_samples_for_results
+        self.capacity = capacity
+        self.agent_to_episodic = agent_to_episodic
+        self.pretrain_semantic = pretrain_semantic
+        self.env = gym.make(self.env_str, **self.env_config)
+        self.default_root_dir = os.path.join(
+            default_root_dir, str(datetime.datetime.now())
         )
 
         self.device = torch.device(device)
         print(f"Running on {self.device}")
 
         self.ddqn = ddqn
-        self.dueling_dqn = dueling_dqn
 
         self.nn_params = nn_params
         self.nn_params["capacity"] = self.capacity
         self.nn_params["device"] = self.device
         self.nn_params["entities"] = self.env.unwrapped.entities
         self.nn_params["relations"] = self.env.unwrapped.relations
-        self.nn_params["dueling_dqn"] = self.dueling_dqn
-        self.nn_params["is_dqn_or_ppo"] = "dqn"
-        self.nn_params["is_actor"] = False
-        self.nn_params["is_critic"] = False
 
         self.val_filenames = []
         self.is_notebook = is_running_notebook()
@@ -183,14 +208,8 @@ class DQNAgent(HandcraftedAgent):
         self.warm_start = warm_start
         assert self.batch_size <= self.warm_start <= self.replay_buffer_size
 
-        # networks: dqn, dqn_target
-        if self.nn_params["architecture"].lower() == "lstm":
-            function_approximator = LSTM
-            del self.nn_params["architecture"]
-        elif self.nn_params["architecture"].lower() == "stare":
-            raise NotImplementedError
-        self.dqn = function_approximator(**self.nn_params)
-        self.dqn_target = function_approximator(**self.nn_params)
+        self.dqn = GNN(**self.nn_params)
+        self.dqn_target = GNN(**self.nn_params)
         self.dqn_target.load_state_dict(self.dqn.state_dict())
         self.dqn_target.eval()
 
@@ -206,62 +225,112 @@ class DQNAgent(HandcraftedAgent):
         if run_handcrafted_baselines:
             self.run_handcrafted_baselines()
 
-    def run_handcrafted_baselines(self) -> None:
-        """Run and save the handcrafted baselines."""
+    def _create_directory(self, params_to_save: dict) -> None:
+        """Create the directory to store the results."""
+        os.makedirs(self.default_root_dir, exist_ok=True)
+        write_yaml(params_to_save, os.path.join(self.default_root_dir, "train.yaml"))
 
-        env = RoomEnv2(**self.env_config)
-        observations, info = env.reset()
-        env.render("image", save_fig_dir=self.default_root_dir)
-        del env
+    def remove_results_from_disk(self) -> None:
+        """Remove the results from the disk."""
+        shutil.rmtree(self.default_root_dir)
 
-        policies = [
-            {
-                "mm": mm,
-                "qa": qa,
-                "explore": explore,
-                "pretrain_semantic": pretrain_semantic,
-            }
-            for mm in ["random", "episodic", "semantic"]
-            for qa in ["episodic_semantic"]
-            for explore in ["random", "avoid_walls"]
-            for pretrain_semantic in [False, "exclude_walls"]
-        ]
+    def init_memory_systems(self) -> None:
+        """Initialize the agent's memory systems. This has nothing to do with the
+        replay buffer."""
+        self.memory_systems = MemorySystems(
+            episodic=EpisodicMemory(
+                capacity=self.capacity["episodic"], remove_duplicates=False
+            ),
+            semantic=SemanticMemory(capacity=self.capacity["semantic"]),
+            short=ShortMemory(capacity=self.capacity["short"]),
+        )
 
-        results = {}
-        for policy in policies:
-            results[str(policy)] = []
-            for test_seed in [0, 1, 2, 3, 4]:
-                agent_handcrafted = HandcraftedAgent(
-                    env_str="room_env:RoomEnv-v2",
-                    env_config={**self.env_config, "seed": test_seed},
-                    mm_policy=policy["mm"],
-                    qa_policy=policy["qa"],
-                    explore_policy=policy["explore"],
-                    num_samples_for_results=self.num_samples_for_results,
-                    capacity=self.capacity,
-                    pretrain_semantic=policy["pretrain_semantic"],
-                    default_root_dir=self.default_root_dir,
-                )
-                agent_handcrafted.test()
-                results[str(policy)].append(
-                    agent_handcrafted.scores["test_score"]["mean"]
-                )
-                agent_handcrafted.remove_results_from_disk()
-            results[str(policy)] = {
-                "mean": np.mean(results[str(policy)]).item(),
-                "std": np.std(results[str(policy)]).item(),
-            }
-        write_yaml(results, os.path.join(self.default_root_dir, "handcrafted.yaml"))
+        assert self.pretrain_semantic in [False, "exclude_walls", "include_walls"]
+        if self.pretrain_semantic in ["exclude_walls", "include_walls"]:
+            if self.pretrain_semantic == "exclude_walls":
+                exclude_walls = True
+            else:
+                exclude_walls = False
+            room_layout = self.env.unwrapped.return_room_layout(exclude_walls)
+
+            assert self.capacity["semantic"] > 0
+            _ = self.memory_systems.semantic.pretrain_semantic(
+                semantic_knowledge=room_layout,
+                return_remaining_space=False,
+                freeze=False,
+            )
+
+    def get_deepcopied_memory_state(self) -> dict:
+        """Get a deepcopied memory state.
+
+        This is necessary because the memory state is a list of dictionaries, which is
+        mutable.
+
+        Returns:
+            deepcopied memory_state
+        """
+        return deepcopy(self.memory_systems.return_as_a_dict_list())
+
+    def step(
+        self, observations: dict, greedy: bool, save_to_replay_buffer: bool
+    ) -> tuple[dict, int, float, bool, list]:
+        """Run one step of the agent.
+
+        Since there are three policies to learn, this is quite complicated.
+
+        Args:
+            observations: the observations from the environment
+            greedy: whether to act greedily
+            save_to_replay_buffer: whether to save the transition to the replay buffer
+
+        Returns:
+            observations, action, reward, done, q_values
+
+        """
+        if self.agent_to_episodic:
+            agent_location_observations = []
+            remaining_observations = []
+
+            for obs in observations["room"]:
+                if obs[0] == "agent" and obs[1] == "atlocation":
+                    agent_location_observations.append(obs)
+                else:
+                    remaining_observations.append(obs)
+
+            if len(agent_location_observations) > 0:
+                for obs in agent_location_observations:
+                    encode_observation(self.memory_systems, obs)
+                    manage_memory(
+                        self.memory_systems,
+                        split_possessive=False,
+                    )
+        else:
+            remaining_observations = observations["room"]
 
     def fill_replay_buffer(self) -> None:
         """Make the replay buffer full in the beginning with the uniformly-sampled
         actions. The filling continues until it reaches the warm start size.
 
         """
-        pass
+        new_episode_starts = True
+        while len(self.replay_buffer) < self.warm_start:
+
+            if new_episode_starts:
+                self.init_memory_systems()
+                observations, info = self.env.reset()
+                done = False
+                new_episode_starts = False
+
+            observations, action, reward, done, q_values = self.step(
+                observations, greedy=False, save_to_replay_buffer=False
+            )
+
+            if done:
+                new_episode_starts = True
 
     def train(self) -> None:
         """Code for training"""
+        raise NotImplementedError("Should be implemented by the inherited class!")
 
     def validate(self) -> None:
         self.dqn.eval()
