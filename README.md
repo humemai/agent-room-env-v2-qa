@@ -12,8 +12,7 @@ This repo is to train an agent with a GNN that interacts with the [RoomEnv-v2](h
 1. python 3.10 or higher.
 1. Running in a virtual environment (e.g., conda, virtualenv, etc.) is highly
    recommended so that you don't mess up with the system python.
-1. Install the `humemai` python package, by running `pip install git+https://github.com/humemai/humemai@main`
-1. Install the `room-env` python package, by running `pip install git+https://github.com/humemai/room-env@main`
+1. Install the requirements by running `pip install -r requirements.txt`
 
 ## Run training
 
@@ -25,16 +24,6 @@ The hyperparameters can be configured in [`train.yaml`](./train.yaml). The train
 checkpoints will be saved at [`./training-results/`](./training-results/).
 
 ## Results
-
-| Comparison of our methods and the baseline |
-| :----------------------------------------: |
-|      ![](./figures/final-results.png)      |
-
-| Q-values of memory management policy (test) |    Q-values of explore policy (test)     | Q-values of explore policy (baseline history room size of 24) (test) |
-| :-----------------------------------------: | :--------------------------------------: | :------------------------------------------------------------------: |
-|     ![](./figures/q-values-test-mm.png)     | ![](./figures/q-values-test-explore.png) |              ![](./figures/q-values-test-baseline.png)               |
-
-Also check out [`./trained-agents/`](./trained-agents) to see the saved training results.
 
 ## pdoc documentation
 

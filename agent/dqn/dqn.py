@@ -60,11 +60,6 @@ class DQNAgent:
             "num_layers": 2,
             "embedding_dim": 64,
             "make_categorical_embeddings": False,
-            "memory_of_interest": [
-                "episodic",
-                "semantic",
-                "short",
-            ],
             "fuse_information": "sum",
             "include_positional_encoding": True,
             "max_timesteps": 100,
