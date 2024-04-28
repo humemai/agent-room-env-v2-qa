@@ -12,8 +12,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn.functional as F
-from humemai.utils import (argmax, is_running_notebook, list_duplicates_of,
-                           write_pickle, write_yaml)
+from humemai.utils import (
+    argmax,
+    is_running_notebook,
+    list_duplicates_of,
+    write_pickle,
+    write_yaml,
+)
 from IPython.display import clear_output
 from tqdm.auto import tqdm
 
@@ -99,250 +104,6 @@ class ReplayBuffer:
         return self.size
 
 
-class ReplayBufferNStep:
-    """A simple numpy N step replay buffer.
-    copied from https://github.com/Curt-Park/rainbow-is-all-you-need
-
-    """
-
-    def __init__(
-        self,
-        observation_type: str,
-        size: int,
-        obs_dim: tuple = None,
-        batch_size: int = 32,
-        n_step: int = 1,
-        gamma: float = 0.99,
-    ):
-        """Initialize replay buffer.
-
-        Args:
-            observation_type: "dict" or "tensor"
-            size: size of the buffer
-            batch_size: batch size to sample
-
-        """
-        if observation_type == "dict":
-            self.obs_buf = np.array([{}] * size)
-            self.next_obs_buf = np.array([{}] * size)
-        else:
-            self.obs_buf = np.zeros([size, *obs_dim], dtype=np.float32)
-            self.next_obs_buf = np.zeros([size, *obs_dim], dtype=np.float32)
-
-        self.acts_buf = np.zeros([size], dtype=np.float32)
-        self.rews_buf = np.zeros([size], dtype=np.float32)
-        self.done_buf = np.zeros(size, dtype=np.float32)
-        self.max_size, self.batch_size = size, batch_size
-        (
-            self.ptr,
-            self.size,
-        ) = (
-            0,
-            0,
-        )
-
-        # for N-step Learning
-        self.n_step_buffer = deque(maxlen=n_step)
-        self.n_step = n_step
-        self.gamma = gamma
-
-    def store(
-        self,
-        obs: np.ndarray,
-        act: np.ndarray,
-        rew: float,
-        next_obs: np.ndarray,
-        done: bool,
-    ) -> tuple[np.ndarray, np.ndarray, float, np.ndarray, bool]:
-        transition = (obs, act, rew, next_obs, done)
-        self.n_step_buffer.append(transition)
-
-        # single step transition is not ready
-        if len(self.n_step_buffer) < self.n_step:
-            return ()
-
-        # make a n-step transition
-        rew, next_obs, done = self._get_n_step_info(self.n_step_buffer, self.gamma)
-        obs, act = self.n_step_buffer[0][:2]
-
-        self.obs_buf[self.ptr] = obs
-        self.next_obs_buf[self.ptr] = next_obs
-        self.acts_buf[self.ptr] = act
-        self.rews_buf[self.ptr] = rew
-        self.done_buf[self.ptr] = done
-        self.ptr = (self.ptr + 1) % self.max_size
-        self.size = min(self.size + 1, self.max_size)
-
-        return self.n_step_buffer[0]
-
-    def sample_batch(self) -> dict[str, np.ndarray]:
-        idxs = np.random.choice(self.size, size=self.batch_size, replace=False)
-
-        return dict(
-            obs=self.obs_buf[idxs],
-            next_obs=self.next_obs_buf[idxs],
-            acts=self.acts_buf[idxs],
-            rews=self.rews_buf[idxs],
-            done=self.done_buf[idxs],
-            # for N-step Learning
-            indices=idxs,
-        )
-
-    def sample_batch_from_idxs(self, idxs: np.ndarray) -> dict[str, np.ndarray]:
-        # for N-step Learning
-        return dict(
-            obs=self.obs_buf[idxs],
-            next_obs=self.next_obs_buf[idxs],
-            acts=self.acts_buf[idxs],
-            rews=self.rews_buf[idxs],
-            done=self.done_buf[idxs],
-        )
-
-    def _get_n_step_info(
-        self, n_step_buffer: Deque, gamma: float
-    ) -> tuple[np.int64, np.ndarray, bool]:
-        """Return n step rew, next_obs, and done."""
-        # info of the last transition
-        rew, next_obs, done = n_step_buffer[-1][-3:]
-
-        for transition in reversed(list(n_step_buffer)[:-1]):
-            r, n_o, d = transition[-3:]
-
-            rew = r + gamma * rew * (1 - d)
-            next_obs, done = (n_o, d) if d else (next_obs, done)
-
-        return rew, next_obs, done
-
-    def __len__(self) -> int:
-        return self.size
-
-
-class PrioritizedReplayBuffer(ReplayBufferNStep):
-    """Prioritized Replay buffer.
-
-    copied from https://github.com/Curt-Park/rainbow-is-all-you-need
-
-
-    Attributes:
-        max_priority (float): max priority
-        tree_ptr (int): next index of tree
-        alpha (float): alpha parameter for prioritized replay buffer
-        sum_tree (SumSegmentTree): sum tree for prior
-        min_tree (MinSegmentTree): min tree for min prior to get max weight
-
-    """
-
-    def __init__(
-        self,
-        observation_type: str,
-        size: int,
-        obs_dim: tuple = None,
-        batch_size: int = 32,
-        alpha: float = 0.6,
-        n_step: int = 1,
-        gamma: float = 0.99,
-    ):
-        """Initialization."""
-        assert alpha >= 0
-
-        super(PrioritizedReplayBuffer, self).__init__(
-            observation_type, size, obs_dim, batch_size, n_step, gamma
-        )
-        self.max_priority, self.tree_ptr = 1.0, 0
-        self.alpha = alpha
-
-        # capacity must be positive and a power of 2.
-        tree_capacity = 1
-        while tree_capacity < self.max_size:
-            tree_capacity *= 2
-
-        self.sum_tree = SumSegmentTree(tree_capacity)
-        self.min_tree = MinSegmentTree(tree_capacity)
-
-    def store(
-        self,
-        obs: np.ndarray,
-        act: int,
-        rew: float,
-        next_obs: np.ndarray,
-        done: bool,
-    ) -> tuple[np.ndarray, np.ndarray, float, np.ndarray, bool]:
-        """Store experience and priority."""
-        transition = super().store(obs, act, rew, next_obs, done)
-
-        if transition:
-            self.sum_tree[self.tree_ptr] = self.max_priority**self.alpha
-            self.min_tree[self.tree_ptr] = self.max_priority**self.alpha
-            self.tree_ptr = (self.tree_ptr + 1) % self.max_size
-
-        return transition
-
-    def sample_batch(self, beta: float = 0.4) -> dict[str, np.ndarray]:
-        """Sample a batch of experiences."""
-        assert len(self) >= self.batch_size
-        assert beta > 0
-
-        indices = self._sample_proportional()
-
-        obs = self.obs_buf[indices]
-        next_obs = self.next_obs_buf[indices]
-        acts = self.acts_buf[indices]
-        rews = self.rews_buf[indices]
-        done = self.done_buf[indices]
-        weights = np.array([self._calculate_weight(i, beta) for i in indices])
-
-        return dict(
-            obs=obs,
-            next_obs=next_obs,
-            acts=acts,
-            rews=rews,
-            done=done,
-            weights=weights,
-            indices=indices,
-        )
-
-    def update_priorities(self, indices: list[int], priorities: np.ndarray):
-        """Update priorities of sampled transitions."""
-        assert len(indices) == len(priorities)
-
-        for idx, priority in zip(indices, priorities):
-            assert priority > 0
-            assert 0 <= idx < len(self)
-
-            self.sum_tree[idx] = priority**self.alpha
-            self.min_tree[idx] = priority**self.alpha
-
-            self.max_priority = max(self.max_priority, priority)
-
-    def _sample_proportional(self) -> list[int]:
-        """Sample indices based on proportions."""
-        indices = []
-        p_total = self.sum_tree.sum(0, len(self) - 1)
-        segment = p_total / self.batch_size
-
-        for i in range(self.batch_size):
-            a = segment * i
-            b = segment * (i + 1)
-            upperbound = random.uniform(a, b)
-            idx = self.sum_tree.retrieve(upperbound)
-            indices.append(idx)
-
-        return indices
-
-    def _calculate_weight(self, idx: int, beta: float):
-        """Calculate the weight of the experience at idx."""
-        # get max weight
-        p_min = self.min_tree.min() / self.sum_tree.sum()
-        max_weight = (p_min * len(self)) ** (-beta)
-
-        # calculate weights
-        p_sample = self.sum_tree[idx] / self.sum_tree.sum()
-        weight = (p_sample * len(self)) ** (-beta)
-        weight = weight / max_weight
-
-        return weight
-
-
 def plot_results(
     scores: dict,
     training_loss: list,
@@ -374,13 +135,14 @@ def plot_results(
         clear_output(True)
 
     if to_plot == "all":
-        plt.figure(figsize=(20, 13))
+        plt.figure(figsize=(20, 20))
 
-        plt.subplot(233)
+        plt.subplot(333)
         if scores["train"]:
             plt.title(
                 f"iteration {iteration_idx} out of {num_iterations}. "
-                f"training score: {scores['train'][-1]} out of {total_maximum_episode_rewards}"
+                f"training score: {scores['train'][-1]} out of "
+                f"{total_maximum_episode_rewards}"
             )
             plt.plot(scores["train"], label="Training score")
             plt.xlabel("episode")
@@ -388,14 +150,16 @@ def plot_results(
         if scores["val"]:
             val_means = [round(np.mean(scores).item()) for scores in scores["val"]]
             plt.title(
-                f"validation score: {val_means[-1]} out of {total_maximum_episode_rewards}"
+                f"validation score: {val_means[-1]} out of "
+                f"{total_maximum_episode_rewards}"
             )
             plt.plot(val_means, label="Validation score")
             plt.xlabel("episode")
 
         if scores["test"]:
             plt.title(
-                f"test score: {np.mean(scores['test'])} out of {total_maximum_episode_rewards}"
+                f"test score: {np.mean(scores['test'])} out of "
+                f"{total_maximum_episode_rewards}"
             )
             plt.plot(
                 [round(np.mean(scores["test"]).item(), 2)] * len(scores["train"]),
@@ -404,45 +168,40 @@ def plot_results(
             plt.xlabel("episode")
         plt.legend(loc="upper left")
 
-        plt.subplot(231)
+        plt.subplot(331)
         plt.title("training td loss")
         plt.plot(training_loss)
         plt.xlabel("update counts")
 
-        plt.subplot(232)
+        plt.subplot(332)
         plt.title("epsilons")
         plt.plot(epsilons)
         plt.xlabel("update counts")
 
-        plt.subplot(234)
-        plt.title("Q-values, train")
-        for action_number in range(number_of_actions):
-            plt.plot(
-                [q_values_[action_number] for q_values_ in q_values["train"]],
-                label=f"action {action_number}",
-            )
-        plt.legend(loc="upper left")
-        plt.xlabel("number of actions")
+        for subplot_num, split in zip([334, 335, 336], ["train", "val", "test"]):
+            plt.subplot(subplot_num)
+            plt.title(f"Q-values (mm), {split}")
+            for action_number in range(number_of_actions):
+                plt.plot(
+                    [q_values_[action_number] for q_values_ in q_values[split]["mm"]],
+                    label=f"action {action_number}",
+                )
+            plt.legend(loc="upper left")
+            plt.xlabel("number of actions")
 
-        plt.subplot(235)
-        plt.title("Q-values, val")
-        for action_number in range(number_of_actions):
-            plt.plot(
-                [q_values_[action_number] for q_values_ in q_values["val"]],
-                label=f"action {action_number}",
-            )
-        plt.legend(loc="upper left")
-        plt.xlabel("number of actions")
-
-        plt.subplot(236)
-        plt.title("Q-values, test")
-        for action_number in range(number_of_actions):
-            plt.plot(
-                [q_values_[action_number] for q_values_ in q_values["test"]],
-                label=f"action {action_number}",
-            )
-        plt.legend(loc="upper left")
-        plt.xlabel("number of actions")
+        for subplot_num, split in zip([337, 338, 339], ["train", "val", "test"]):
+            plt.subplot(subplot_num)
+            plt.title(f"Q-values (explore), {split}")
+            for action_number in range(number_of_actions):
+                plt.plot(
+                    [
+                        q_values_[action_number]
+                        for q_values_ in q_values[split]["explore"]
+                    ],
+                    label=f"action {action_number}",
+                )
+            plt.legend(loc="upper left")
+            plt.xlabel("number of actions")
 
         plt.subplots_adjust(hspace=0.5)
         if save_fig:
@@ -472,7 +231,8 @@ def plot_results(
         if scores["train"]:
             plt.title(
                 f"iteration {iteration_idx} out of {num_iterations}. "
-                f"training score: {scores['train'][-1]} out of {total_maximum_episode_rewards}"
+                f"training score: {scores['train'][-1]} out of "
+                f"{total_maximum_episode_rewards}"
             )
             plt.plot(scores["train"], label="Training score")
             plt.xlabel("episode")
@@ -480,14 +240,16 @@ def plot_results(
         if scores["val"]:
             val_means = [round(np.mean(scores).item()) for scores in scores["val"]]
             plt.title(
-                f"validation score: {val_means[-1]} out of {total_maximum_episode_rewards}"
+                f"validation score: {val_means[-1]} out of "
+                f"{total_maximum_episode_rewards}"
             )
             plt.plot(val_means, label="Validation score")
             plt.xlabel("episode")
 
         if scores["test"]:
             plt.title(
-                f"test score: {np.mean(scores['test'])} out of {total_maximum_episode_rewards}"
+                f"test score: {np.mean(scores['test'])} out of "
+                f"{total_maximum_episode_rewards}"
             )
             plt.plot(
                 [round(np.mean(scores["test"]).item(), 2)] * len(scores["train"]),
@@ -496,40 +258,25 @@ def plot_results(
             plt.xlabel("episode")
         plt.legend(loc="upper left")
 
-    elif to_plot == "q_values_train":
-        plt.figure()
-        plt.title("Q-values, train")
-        for action_number in range(number_of_actions):
-            plt.plot(
-                [q_values_[action_number] for q_values_ in q_values["train"]],
-                label=f"action {action_number}",
-            )
-        plt.legend(loc="upper left")
-        plt.xlabel("number of actions")
-
-    elif to_plot == "q_values_val":
-        plt.figure()
-        plt.title("Q-values, val")
-        for action_number in range(number_of_actions):
-            plt.plot(
-                [q_values_[action_number] for q_values_ in q_values["val"]],
-                label=f"action {action_number}",
-            )
-        plt.legend(loc="upper left")
-        plt.xlabel("number of actions")
-
-    elif to_plot == "q_values_test":
-        plt.figure()
-        plt.title("Q-values, test")
-        for action_number in range(number_of_actions):
-            plt.plot(
-                [q_values_[action_number] for q_values_ in q_values["test"]],
-                label=f"action {action_number}",
-            )
-        plt.legend(loc="upper left")
-        plt.xlabel("number of actions")
     else:
-        raise ValueError(f"to_plot={to_plot} is not valid.")
+        pass
+
+    for split in ["train", "val", "test"]:
+        if to_plot == f"q_values_{split}":
+            plt.figure(figsize=(20, 13))
+            for subplot_num, policy in zip([121, 122], ["mm", "explore"]):
+                plt.subplot(subplot_num)
+                plt.title(f"Q-values ({policy}), {split}")
+                for action_number in range(number_of_actions):
+                    plt.plot(
+                        [
+                            q_values_[action_number]
+                            for q_values_ in q_values[split][policy]
+                        ],
+                        label=f"action {action_number}",
+                    )
+                plt.legend(loc="upper left")
+                plt.xlabel("number of actions")
 
 
 def console(
@@ -557,7 +304,8 @@ def console(
 
     if scores["test"]:
         tqdm.write(
-            f"test score: {np.mean(scores['test'])} out of {total_maximum_episode_rewards}"
+            f"test score: {np.mean(scores['test'])} out of "
+            f"{total_maximum_episode_rewards}"
         )
 
     tqdm.write(f"training loss: {training_loss[-1]}\n")
@@ -593,14 +341,17 @@ def save_final_results(
 
 
 def compute_loss(
-    samples: dict[str, np.ndarray],
+    samples: dict[str, dict[str, np.ndarray]],
     device: str,
-    dqn: torch.nn.Module,
-    dqn_target: torch.nn.Module,
+    dqn: dict[str, torch.nn.Module],
+    dqn_target: dict[str, torch.nn.Module],
     ddqn: str,
     gamma: float,
-) -> torch.Tensor:
+) -> dict[str, torch.Tensor]:
     """Return td loss.
+
+    # G_t   = r + gamma * v(s_{t+1})  if state != Terminal
+    #       = r                       otherwise
 
     Args:
         samples: A dictionary of samples from the replay buffer.
@@ -616,33 +367,120 @@ def compute_loss(
         gamma: discount factor
 
     Returns:
-        loss: torch.Tensor
+        loss["mm"]: temporal difference loss value for mm
+        loss["explore"]: temporal difference loss value for explore
 
     """
-    state = samples["obs"]
-    next_state = samples["next_obs"]
-    action = torch.LongTensor(samples["acts"].reshape(-1, 1)).to(device)
-    reward = torch.FloatTensor(samples["rews"].reshape(-1, 1)).to(device)
-    done = torch.FloatTensor(samples["done"].reshape(-1, 1)).to(device)
+    loss = {"mm": None, "explore": None}
 
-    # G_t   = r + gamma * v(s_{t+1})  if state != Terminal
-    #       = r                       otherwise
-    curr_q_value = dqn(state).gather(1, action)
-    if ddqn:
-        next_q_value = (
-            dqn_target(next_state)
-            .gather(1, dqn(next_state).argmax(dim=1, keepdim=True))
-            .detach()
-        )
-    else:
-        next_q_value = dqn_target(next_state).max(dim=1, keepdim=True)[0].detach()
-    mask = 1 - done
-    target = (reward + gamma * next_q_value * mask).to(device)
+    for policy in ["mm", "explore"]:
 
-    # calculate dqn loss
-    loss = F.smooth_l1_loss(curr_q_value, target)
+        state = samples[policy]["obs"]
+        next_state = samples[policy]["next_obs"]
+        action = torch.LongTensor(samples[policy]["acts"].reshape(-1, 1)).to(device)
+        reward = torch.FloatTensor(samples[policy]["rews"].reshape(-1, 1)).to(device)
+        done = torch.FloatTensor(samples[policy]["done"].reshape(-1, 1)).to(device)
+
+        if policy == "mm":
+            entity_of_interest = None
+            edge_of_interest = {"relation_type": "any", "qualifier": "current_time"}
+        elif policy == "explore":
+            entity_of_interest = {"entity_type": "agent", "qualifier": "any"}
+            edge_of_interest = None
+        of_interest = {
+            "entity_of_interest": entity_of_interest,
+            "edge_of_interest": edge_of_interest,
+        }
+
+        gnn_features = dqn["gnn"](state, of_interest=of_interest)
+        gnn_features = gnn_features.view(-1, gnn_features.size(-1))
+        curr_q_value = dqn[policy](gnn_features).gather(1, action)
+
+        if ddqn:
+            next_q_value = (
+                dqn_target[policy](dqn_target["gnn"](next_state, policy=policy))
+                .gather(
+                    1,
+                    dqn[policy](dqn["gnn"](next_state, policy=policy)).argmax(
+                        dim=1, keepdim=True
+                    ),
+                )
+                .detach()
+            )
+
+        else:
+            next_q_value = (
+                dqn_target[policy](dqn_target["gnn"](next_state))
+                .max(dim=1, keepdim=True)[0]
+                .detach()
+            )
+
+        if policy == "mm":
+            # This is done considering MARL.
+            # Generate random permutation indices
+            # Random permutation of indices along dimension 0 (rows)
+            perm_indices = torch.randperm(next_q_value.size(0))
+
+            # Permute rows of the tensor
+            next_q_value = torch.index_select(next_q_value, 0, perm_indices)
+
+            # Adjust the dimension of next_q_value to match curr_q_value
+            min_size = min(curr_q_value.size(0), next_q_value.size(0))
+            next_q_value = next_q_value[:min_size]
+            curr_q_value = curr_q_value[:min_size]
+
+        mask = 1 - done[:min_size]
+        target = (reward[:min_size] + gamma * next_q_value * mask).to(device)
+
+        # calculate dqn loss
+        loss[policy] = F.smooth_l1_loss(curr_q_value, target)
 
     return loss
+
+    #     mask = 1 - done
+    #     target = (reward + gamma * next_q_value * mask).to(device)
+
+    #     # calculate dqn loss
+    #     loss[policy] = F.smooth_l1_loss(curr_q_value, target)
+
+    # return loss
+
+
+def update_model(
+    replay_buffer: ReplayBuffer,
+    optimizer: torch.optim.Adam,
+    device: str,
+    dqn: dict[str, torch.nn.Module],
+    dqn_target: dict[str, torch.nn.Module],
+    ddqn: str,
+    gamma: float,
+) -> dict[str, float]:
+    """Update the model by gradient descent.
+
+    Args:
+        replay_buffer: replay buffer
+        optimizer: optimizer
+        device: cpu or cuda
+        dqn: dqn model
+        dqn_target: dqn target model
+        ddqn: whether to use double dqn or not
+        gamma: discount factor
+
+    Returns:
+        loss: temporal difference loss value
+    """
+    samples = {}
+    for policy in ["mm", "explore"]:
+        samples[policy] = replay_buffer[policy].sample_batch()
+
+    loss = compute_loss(samples, device, dqn, dqn_target, ddqn, gamma)
+
+    optimizer.zero_grad()
+    total_loss = loss["mm"] + loss["explore"]
+    total_loss.backward()
+    optimizer.step()
+
+    return {"mm": loss["mm"].item(), "explore": loss["explore"].item()}
 
 
 def select_action(
@@ -675,48 +513,13 @@ def select_action(
     return selected_action, q_values
 
 
-def update_model(
-    replay_buffer: ReplayBuffer,
-    optimizer: torch.optim.Adam,
-    device: str,
-    dqn: torch.nn.Module,
-    dqn_target: torch.nn.Module,
-    ddqn: str,
-    gamma: float,
-) -> torch.Tensor:
-    """Update the model by gradient descent.
-
-    Args:
-        replay_buffer: replay buffer
-        optimizer: optimizer
-        device: cpu or cuda
-        dqn: dqn model
-        dqn_target: dqn target model
-        ddqn: whether to use double dqn or not
-        gamma: discount factor
-
-    Returns:
-        loss: temporal difference loss value
-    """
-    samples = replay_buffer.sample_batch()
-
-    loss = compute_loss(samples, device, dqn, dqn_target, ddqn, gamma)
-
-    optimizer.zero_grad()
-    loss.backward()
-    optimizer.step()
-
-    return loss.item()
-
-
 def save_validation(
     scores_temp: list,
     scores: dict,
     default_root_dir: str,
     num_validation: int,
-    val_filenames: list,
-    dqn: torch.nn.Module,
-    if_duplicate_take_first: bool = False,
+    val_filenames: dict,
+    dqn=dict,
 ) -> None:
     """Keep the best validation model.
 
@@ -725,24 +528,28 @@ def save_validation(
         scores: a dictionary of scores for train, validation, and test.
         default_root_dir: the root directory where the results are saved.
         num_validation: the current validation episode.
-        val_filenames: a list of filenames for the validation models.
-        dqn: the dqn model.
-        if_duplicate_take_first: if True, take the first duplicate model. This will take
-            the higher training loss model. If False, take the last duplicate model.
-            This will take the lower training loss model.
+        val_filenames: best and current
+        dqn: gnn, mm, and explore
     """
-    mean_score = round(np.mean(scores_temp).item())
-    filename = os.path.join(
-        default_root_dir, f"episode={num_validation}_val-score={mean_score}.pt"
-    )
-    torch.save(dqn.state_dict(), filename)
-
-    val_filenames.append(filename)
+    current_score = round(np.mean(scores_temp).item())
+    val_filenames["current"]["score"] = current_score
+    best_score = val_filenames["best"]["score"]
     scores["val"].append(scores_temp)
+
+    filename_prefix = os.path.join(
+        default_root_dir, f"episode={num_validation}_val-score={current_score}"
+    )
+    for nn_type in ["gnn", "mm", "explore"]:
+        filename = filename_prefix + "_" + nn_type + ".pt"
+        val_filenames["current"][nn_type] = filename
+        torch.save(dqn[nn_type].state_dict(), filename)
+
+    if current_score > best_score:
+        val_filenames["best"] = val_filenames["current"]
 
     scores_to_compare = []
     for filename in val_filenames:
-        score = int(filename.split("val-score=")[-1].split(".pt")[0].split("/")[-1])
+        score = int(filename.split("val-score=")[-1].split("/")[-1])
         scores_to_compare.append(score)
 
     indexes = list_duplicates_of(scores_to_compare, max(scores_to_compare))
@@ -822,140 +629,3 @@ def update_epsilon(
     )
 
     return epsilon
-
-
-class SegmentTree:
-    """Create SegmentTree.
-
-    Taken from OpenAI baselines github repository:
-    https://github.com/openai/baselines/blob/master/baselines/common/segment_tree.py
-
-    Attributes:
-        capacity (int)
-        tree (list)
-        operation (function)
-
-    """
-
-    def __init__(self, capacity: int, operation: Callable, init_value: float):
-        """Initialization.
-
-        Args:
-            capacity (int)
-            operation (function)
-            init_value (float)
-
-        """
-        assert (
-            capacity > 0 and capacity & (capacity - 1) == 0
-        ), "capacity must be positive and a power of 2."
-        self.capacity = capacity
-        self.tree = [init_value for _ in range(2 * capacity)]
-        self.operation = operation
-
-    def _operate_helper(
-        self, start: int, end: int, node: int, node_start: int, node_end: int
-    ) -> float:
-        """Returns result of operation in segment."""
-        if start == node_start and end == node_end:
-            return self.tree[node]
-        mid = (node_start + node_end) // 2
-        if end <= mid:
-            return self._operate_helper(start, end, 2 * node, node_start, mid)
-        else:
-            if mid + 1 <= start:
-                return self._operate_helper(start, end, 2 * node + 1, mid + 1, node_end)
-            else:
-                return self.operation(
-                    self._operate_helper(start, mid, 2 * node, node_start, mid),
-                    self._operate_helper(mid + 1, end, 2 * node + 1, mid + 1, node_end),
-                )
-
-    def operate(self, start: int = 0, end: int = 0) -> float:
-        """Returns result of applying `self.operation`."""
-        if end <= 0:
-            end += self.capacity
-        end -= 1
-
-        return self._operate_helper(start, end, 1, 0, self.capacity - 1)
-
-    def __setitem__(self, idx: int, val: float):
-        """Set value in tree."""
-        idx += self.capacity
-        self.tree[idx] = val
-
-        idx //= 2
-        while idx >= 1:
-            self.tree[idx] = self.operation(self.tree[2 * idx], self.tree[2 * idx + 1])
-            idx //= 2
-
-    def __getitem__(self, idx: int) -> float:
-        """Get real value in leaf node of tree."""
-        assert 0 <= idx < self.capacity
-
-        return self.tree[self.capacity + idx]
-
-
-class SumSegmentTree(SegmentTree):
-    """Create SumSegmentTree.
-
-    Taken from OpenAI baselines github repository:
-    https://github.com/openai/baselines/blob/master/baselines/common/segment_tree.py
-
-    """
-
-    def __init__(self, capacity: int):
-        """Initialization.
-
-        Args:
-            capacity (int)
-
-        """
-        super(SumSegmentTree, self).__init__(
-            capacity=capacity, operation=operator.add, init_value=0.0
-        )
-
-    def sum(self, start: int = 0, end: int = 0) -> float:
-        """Returns arr[start] + ... + arr[end]."""
-        return super(SumSegmentTree, self).operate(start, end)
-
-    def retrieve(self, upperbound: float) -> int:
-        """Find the highest index `i` about upper bound in the tree"""
-        # TODO: Check assert case and fix bug
-        assert 0 <= upperbound <= self.sum() + 1e-5, "upperbound: {}".format(upperbound)
-
-        idx = 1
-
-        while idx < self.capacity:  # while non-leaf
-            left = 2 * idx
-            right = left + 1
-            if self.tree[left] > upperbound:
-                idx = 2 * idx
-            else:
-                upperbound -= self.tree[left]
-                idx = right
-        return idx - self.capacity
-
-
-class MinSegmentTree(SegmentTree):
-    """Create SegmentTree.
-
-    Taken from OpenAI baselines github repository:
-    https://github.com/openai/baselines/blob/master/baselines/common/segment_tree.py
-
-    """
-
-    def __init__(self, capacity: int):
-        """Initialization.
-
-        Args:
-            capacity (int)
-
-        """
-        super(MinSegmentTree, self).__init__(
-            capacity=capacity, operation=min, init_value=float("inf")
-        )
-
-    def min(self, start: int = 0, end: int = 0) -> float:
-        """Returns min(arr[start], ...,  arr[end])."""
-        return super(MinSegmentTree, self).operate(start, end)
