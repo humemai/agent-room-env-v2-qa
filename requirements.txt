@@ -1,3 +1,0 @@
-room-env==2.0.1
-humemai==1.0.2
-torch_geometric==2.5.3

@@ -1,11 +1,9 @@
 """Utility functions for DQN."""
 
 import logging
-import operator
 import os
+from typing import Literal
 import random
-from collections import deque
-from typing import Callable, Deque, Literal
 
 import gymnasium as gym
 import matplotlib.pyplot as plt
@@ -35,34 +33,84 @@ class ReplayBuffer:
     numpy replay buffer is faster than deque or list.
     copied from https://github.com/Curt-Park/rainbow-is-all-you-need
 
+    Attributes:
+        obs_buf (np.ndarray): This is a np.ndarray of dictionaries. This is because
+            dictionary can take any type of data.
+        next_obs_buf (np.ndarray): This is a np.ndarray of dictionaries. This is because
+            dictionary can take any type of data.
+        acts_buf (np.ndarray): This is a np.ndarray of dictionaries. This is because
+            dictionary can take any type of data. In our scenario, an action is a vector
+            of integer whose length is variable.
+        rews_buf (np.ndarray): This is a np.ndarray of floats.
+        done_buf (np.ndarray): This is a np.ndarray of bools.
+        max_size (int): The maximum size of the buffer.
+        batch_size (int): The batch size to sample.
+        ptr(int): The pointer to the current index.
+        size (int): The current size of the buffer.
+
+    Example:
+    ```
+    from agent.dqn.utils import ReplayBuffer
+    import random
+
+    buffer = ReplayBuffer(8, 4)
+
+    for _ in range(6):
+
+        rand_dict_1 = {str(i): str(random.randint(0, 10)) for i in range(3)}
+        rand_dict_2 = {str(i): str(random.randint(0, 10)) for i in range(3)}
+        action = [i for i in range(random.randint(1, 10))]
+        buffer.store(
+            *[
+                rand_dict_1,
+                action,
+                random.choice([-1, 1]),
+                rand_dict_2,
+                random.choice([False, True]),
+            ]
+        )
+
+    sample = buffer.sample_batch()
+    ```
+    >>> sample
+    {'obs': array([{'0': '3', '1': '4', '2': '5'}, {'0': '5', '1': '1', '2': '0'},
+            {'0': '9', '1': '6', '2': '2'}, {'0': '7', '1': '2', '2': '4'}],
+        dtype=object),
+    'next_obs': array([{'0': '5', '1': '0', '2': '5'}, {'0': '5', '1': '1', '2': '9'},
+            {'0': '5', '1': '8', '2': '4'}, {'0': '6', '1': '9', '2': '4'}],
+        dtype=object),
+    'acts': array([list([0, 1, 2, 3, 4, 5]), list([0, 1, 2, 3, 4, 5, 6, 7]),
+            list([0, 1]), list([0])], dtype=object),
+    'rews': array([ 1., -1., -1.,  1.], dtype=float32),
+    'done': array([0., 1., 1., 0.], dtype=float32)}
+
+    >>> sample["acts"]
+    array([list([0, 1, 2, 3, 4, 5, 6]), list([0, 1, 2]),
+        list([0, 1, 2, 3, 4, 5, 6, 7]), list([0, 1, 2, 3])], dtype=object)
+
+    >>> sample["acts"].shape
+    (4,)
+
     """
 
     def __init__(
         self,
-        observation_type: Literal["dict", "tensor"],
         size: int,
-        obs_dim: tuple = None,
         batch_size: int = 32,
     ):
         """Initialize replay buffer.
 
         Args:
-            observation_type: "dict" or "tensor"
             size: size of the buffer
             batch_size: batch size to sample
 
         """
         if batch_size > size:
             raise ValueError("batch_size must be smaller than size")
-        if observation_type == "dict":
-            self.obs_buf = np.array([{}] * size)
-            self.next_obs_buf = np.array([{}] * size)
-        else:
-            raise ValueError("At the moment, observation_type must be 'dict'")
-            # self.obs_buf = np.zeros([size, *obs_dim], dtype=np.float32)
-            # self.next_obs_buf = np.zeros([size, *obs_dim], dtype=np.float32)
 
-        self.acts_buf = np.zeros([size], dtype=np.float32)
+        self.obs_buf = np.array([{}] * size)
+        self.next_obs_buf = np.array([{}] * size)
+        self.acts_buf = np.array([{}] * size)
         self.rews_buf = np.zeros([size], dtype=np.float32)
         self.done_buf = np.zeros(size, dtype=np.float32)
         self.max_size, self.batch_size = size, batch_size
@@ -81,7 +129,17 @@ class ReplayBuffer:
         rew: float,
         next_obs: np.ndarray,
         done: bool,
-    ):
+    ) -> None:
+        """Store the data in the buffer.
+
+        Args:
+            obs: observation
+            act: action
+            rew: reward
+            next_obs: next observation
+            done: done
+
+        """
         self.obs_buf[self.ptr] = obs
         self.next_obs_buf[self.ptr] = next_obs
         self.acts_buf[self.ptr] = act
@@ -90,8 +148,28 @@ class ReplayBuffer:
         self.ptr = (self.ptr + 1) % self.max_size
         self.size = min(self.size + 1, self.max_size)
 
-    def sample_batch(self) -> dict[str, np.ndarray]:
-        idxs = np.random.choice(self.size, size=self.batch_size, replace=False)
+    def sample_indices(self) -> np.ndarray:
+        """Sample indices from the buffer."""
+        return np.random.choice(self.size, size=self.batch_size, replace=False)
+
+    def sample_batch(self, idxs: np.ndarray | None = None) -> dict[str, np.ndarray]:
+        """Sample a batch of data from the buffer.
+
+        Args:
+            idxs: indices to sample from the buffer. If None, idxs will be
+                randomly sampled.
+
+        Returns:
+            A dictionary of samples from the replay buffer.
+                obs: np.ndarray,
+                next_obs: np.ndarray,
+                acts: np.ndarray,
+                rews: float,
+                done: bool
+
+        """
+        if idxs is None:
+            idxs = self.sample_indices()
         return dict(
             obs=self.obs_buf[idxs],
             next_obs=self.next_obs_buf[idxs],
@@ -102,6 +180,64 @@ class ReplayBuffer:
 
     def __len__(self) -> int:
         return self.size
+
+
+class MultiAgentReplayBuffer:
+    """A simple numpy replay buffer for multi-agent."""
+
+    def __init__(self, replay_buffer_1: ReplayBuffer, replay_buffer_2: ReplayBuffer):
+        """Initialize replay buffer.
+
+        Attributes:
+            replay_buffer_1 (ReplayBuffer): replay buffer for memory management
+            replay_buffer_2 (ReplayBuffer): replay buffer for explore
+
+        Args:
+            replay_buffer_1: replay buffer for memory management
+            replay_buffer_2: replay buffer for explore
+
+        """
+        self.replay_buffer_1 = replay_buffer_1
+        self.replay_buffer_2 = replay_buffer_2
+        assert len(replay_buffer_1) == len(
+            replay_buffer_2
+        ), "The replay buffers must have the same size."
+        assert (
+            replay_buffer_1.batch_size == replay_buffer_2.batch_size
+        ), "The replay buffers must have the same batch size."
+
+    def sample_batch(self, sample_same_index: bool) -> tuple[dict, dict]:
+        """Sample a batch of data from the buffer.
+
+        Ars:
+            sample_same_index: whether to sample the same index for both replay buffers.
+
+        Returns:
+            batch_1: a dictionary of samples from the replay buffer 1.
+                obs: np.ndarray,
+                next_obs: np.ndarray,
+                acts: np.ndarray,
+                rews: float,
+                done: bool
+
+            batch_2: a dictionary of samples from the replay buffer 2.
+                obs: np.ndarray,
+                next_obs: np.ndarray,
+                acts: np.ndarray,
+                rews: float,
+                done: bool
+
+        """
+
+        if sample_same_index:
+            idxs = self.replay_buffer_1.sample_indices()
+            batch_1 = self.replay_buffer_1.sample_batch(idxs)
+            batch_2 = self.replay_buffer_2.sample_batch(idxs)
+        else:
+            batch_1 = self.replay_buffer_1.sample_batch()
+            batch_2 = self.replay_buffer_2.sample_batch()
+
+        return batch_1, batch_2
 
 
 def plot_results(
@@ -341,20 +477,21 @@ def save_final_results(
 
 
 def compute_loss(
-    samples: dict[str, dict[str, np.ndarray]],
+    batch_mm: dict,
+    batch_explore: dict,
     device: str,
     dqn: dict[str, torch.nn.Module],
     dqn_target: dict[str, torch.nn.Module],
     ddqn: str,
     gamma: float,
-) -> dict[str, torch.Tensor]:
-    """Return td loss.
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return the DQN td loss.
 
-    # G_t   = r + gamma * v(s_{t+1})  if state != Terminal
-    #       = r                       otherwise
+    G_t   = r + gamma * v(s_{t+1})  if state != Terminal
+          = r                       otherwise
 
     Args:
-        samples: A dictionary of samples from the replay buffer.
+        batch: A dictionary of samples from the replay buffer.
             obs: np.ndarray,
             act: np.ndarray,
             rew: float,
@@ -367,120 +504,104 @@ def compute_loss(
         gamma: discount factor
 
     Returns:
-        loss["mm"]: temporal difference loss value for mm
-        loss["explore"]: temporal difference loss value for explore
+        loss_mm, loss_explore: TD losses for memory management and explore
 
     """
-    loss = {"mm": None, "explore": None}
+    s_mm = batch_mm["obs"]
+    s_next_mm = batch_mm["next_obs"]
+    a_mm = batch_mm["acts"]
+    r_mm = torch.FloatTensor(batch_mm["rews"].reshape(-1, 1)).to(device)
+    d_mm = torch.FloatTensor(batch_mm["done"].reshape(-1, 1)).to(device)
 
-    for policy in ["mm", "explore"]:
+    s_explore = batch_explore["obs"]
+    s_next_explore = batch_explore["next_obs"]
+    a_explore = batch_explore["acts"]
+    r_explore = torch.FloatTensor(batch_explore["rews"].reshape(-1, 1)).to(device)
+    d_explore = torch.FloatTensor(batch_explore["done"].reshape(-1, 1)).to(device)
 
-        state = samples[policy]["obs"]
-        next_state = samples[policy]["next_obs"]
-        action = torch.LongTensor(samples[policy]["acts"].reshape(-1, 1)).to(device)
-        reward = torch.FloatTensor(samples[policy]["rews"].reshape(-1, 1)).to(device)
-        done = torch.FloatTensor(samples[policy]["done"].reshape(-1, 1)).to(device)
+    assert np.array_equal(r_mm, r_explore), "Rewards are not the same."
+    assert np.array_equal(d_mm, d_explore), "Dones are not the same."
 
-        if policy == "mm":
-            entity_of_interest = None
-            edge_of_interest = {"relation_type": "any", "qualifier": "current_time"}
-        elif policy == "explore":
-            entity_of_interest = {"entity_type": "agent", "qualifier": "any"}
-            edge_of_interest = None
-        of_interest = {
-            "entity_of_interest": entity_of_interest,
-            "edge_of_interest": edge_of_interest,
-        }
+    # MEMORY MANAGEMENT
+    curr_q_value_mm = dqn(s_mm, policy="mm")  # [batch_size, num_actions]
 
-        gnn_features = dqn["gnn"](state, of_interest=of_interest)
-        gnn_features = gnn_features.view(-1, gnn_features.size(-1))
-        curr_q_value = dqn[policy](gnn_features).gather(1, action)
+    # EXPLORE
+    curr_q_value_explore = dqn(s_mm, policy="explore")
 
-        if ddqn:
-            next_q_value = (
-                dqn_target[policy](dqn_target["gnn"](next_state, policy=policy))
-                .gather(
-                    1,
-                    dqn[policy](dqn["gnn"](next_state, policy=policy)).argmax(
-                        dim=1, keepdim=True
-                    ),
-                )
-                .detach()
+    a_explore = (
+        torch.LongTensor([item[0] for item in a_explore]).reshape(-1, 1).to(device)
+    )
+    curr_q_value_explore = curr_q_value_explore.gather(dim=1, index=a_explore)
+
+    if ddqn:
+        next_q_value_explore = (
+            dqn_target(s_next_explore, policy="explore")
+            .gather(
+                1, dqn(s_next_explore, policy="explore").argmax(dim=1, keepdim=True)
             )
+            .detach()
+        )
+    else:
+        next_q_value_explore = (
+            dqn_target(s_next_explore, policy="explore")
+            .max(dim=1, keepdim=True)[0]
+            .detach()
+        )
+    mask_explore = 1 - d_explore
+    target = (r_explore + gamma * next_q_value_explore * mask_explore).to(device)
 
-        else:
-            next_q_value = (
-                dqn_target[policy](dqn_target["gnn"](next_state))
-                .max(dim=1, keepdim=True)[0]
-                .detach()
-            )
+    loss_explore = F.smooth_l1_loss(curr_q_value_explore, target)
 
-        if policy == "mm":
-            # This is done considering MARL.
-            # Generate random permutation indices
-            # Random permutation of indices along dimension 0 (rows)
-            perm_indices = torch.randperm(next_q_value.size(0))
-
-            # Permute rows of the tensor
-            next_q_value = torch.index_select(next_q_value, 0, perm_indices)
-
-            # Adjust the dimension of next_q_value to match curr_q_value
-            min_size = min(curr_q_value.size(0), next_q_value.size(0))
-            next_q_value = next_q_value[:min_size]
-            curr_q_value = curr_q_value[:min_size]
-
-        mask = 1 - done[:min_size]
-        target = (reward[:min_size] + gamma * next_q_value * mask).to(device)
-
-        # calculate dqn loss
-        loss[policy] = F.smooth_l1_loss(curr_q_value, target)
-
-    return loss
-
-    #     mask = 1 - done
-    #     target = (reward + gamma * next_q_value * mask).to(device)
-
-    #     # calculate dqn loss
-    #     loss[policy] = F.smooth_l1_loss(curr_q_value, target)
-
-    # return loss
+    return loss_mm, loss_explore
 
 
 def update_model(
-    replay_buffer: ReplayBuffer,
+    replay_buffer_mm: ReplayBuffer,
+    replay_buffer_explore: ReplayBuffer,
     optimizer: torch.optim.Adam,
     device: str,
     dqn: dict[str, torch.nn.Module],
     dqn_target: dict[str, torch.nn.Module],
     ddqn: str,
     gamma: float,
-) -> dict[str, float]:
+    loss_weights: tuple[float, float] = [0.5, 0.5],
+) -> tuple[float, float, float]:
     """Update the model by gradient descent.
 
     Args:
-        replay_buffer: replay buffer
+        replay_buffer_mm: replay buffer for memory management
+        replay_buffer_explore: replay buffer for explore
         optimizer: optimizer
         device: cpu or cuda
         dqn: dqn model
         dqn_target: dqn target model
         ddqn: whether to use double dqn or not
         gamma: discount factor
+        loss_weights: weights for mm and explore losses
 
     Returns:
-        loss: temporal difference loss value
-    """
-    samples = {}
-    for policy in ["mm", "explore"]:
-        samples[policy] = replay_buffer[policy].sample_batch()
+        loss_mm, loss_explore, loss_combined: TD losses for memory management,
+            explore and combined
 
-    loss = compute_loss(samples, device, dqn, dqn_target, ddqn, gamma)
+    """
+    buffer_combined = MultiAgentReplayBuffer(replay_buffer_mm, replay_buffer_explore)
+    batch_mm, batch_explore = buffer_combined.sample_batch(sample_same_index=True)
+
+    loss_mm, loss_explore = compute_loss(
+        batch_mm, batch_explore, device, dqn, dqn_target, ddqn, gamma
+    )
+
+    loss = loss_weights[0] * loss_mm + loss_weights[1] * loss_explore
 
     optimizer.zero_grad()
-    total_loss = loss["mm"] + loss["explore"]
-    total_loss.backward()
+    loss.backward()
     optimizer.step()
 
-    return {"mm": loss["mm"].item(), "explore": loss["explore"].item()}
+    loss_mm = loss_mm.detach().cpu().numpy().item()
+    loss_explore = loss_explore.detach().cpu().numpy().item()
+    loss = loss.detach().cpu().numpy().item()
+
+    return loss_mm, loss_explore, loss
 
 
 def select_action(
@@ -488,29 +609,38 @@ def select_action(
     greedy: bool,
     dqn: torch.nn.Module,
     epsilon: float,
-    action_space: gym.spaces.Discrete,
-) -> tuple[int, list]:
-    """Select an action from the input state, with epsilon-greedy policy.
+    policy_type: Literal["mm", "explore", "qa"],
+) -> tuple[list[int], list[list[float]]]:
+    """Select action(s) from the input state, with epsilon-greedy policy.
 
     Args:
         state: The current state of the memory systems. This is NOT what the gym env
-        gives you. This is made by the agent.
+            gives you. This is made by the agent. This shouldn't be a batch of samples,
+            but a single sample without a batch dimension.
         greedy: always pick greedy action if True
-        save_q_value: whether to save the q values or not.
+        dqn: dqn model
+        epsilon: epsilon
+        policy_type: mm, explore, or qa
 
     Returns:
-        selected_action: an action to take.
-        q_values: a list of q values for each action.
+        selected_actions: dimension is [num_actions_taken]
+        q_values: dimension is [num_actions_taken, action_space_dim]
 
     """
-    q_values = dqn(np.array([state])).detach().cpu().tolist()[0]
+    # Since dqn requires a batch dimension, we need to encapsulate the state in a list
+    q_values = dqn(np.array([state]), policy_type=policy_type).detach().cpu().tolist()
+
+    # remove the dummy batch dimension to make [num_actions_taken, action_space_dim]
+    q_values = q_values[0]
+
+    action_space_dim = len(q_values[0])
 
     if greedy or epsilon < np.random.random():
-        selected_action = argmax(q_values)
+        selected_actions = [argmax(q_values_) for q_values_ in q_values]
     else:
-        selected_action = action_space.sample().item()
+        selected_actions = [random.randint(0, action_space_dim - 1) for _ in q_values]
 
-    return selected_action, q_values
+    return selected_actions, q_values
 
 
 def save_validation(
@@ -518,8 +648,8 @@ def save_validation(
     scores: dict,
     default_root_dir: str,
     num_validation: int,
-    val_filenames: dict,
-    dqn=dict,
+    val_filenames: dict[str, str],
+    dqn=torch.nn.Module,
 ) -> None:
     """Keep the best validation model.
 
@@ -528,40 +658,28 @@ def save_validation(
         scores: a dictionary of scores for train, validation, and test.
         default_root_dir: the root directory where the results are saved.
         num_validation: the current validation episode.
-        val_filenames: best and current
+        val_filenames: looks like `{"best": None, "last": None}`
         dqn: gnn, mm, and explore
+
     """
-    current_score = round(np.mean(scores_temp).item())
-    val_filenames["current"]["score"] = current_score
-    best_score = val_filenames["best"]["score"]
     scores["val"].append(scores_temp)
-
-    filename_prefix = os.path.join(
-        default_root_dir, f"episode={num_validation}_val-score={current_score}"
+    last_score = round(np.mean(scores_temp).item())
+    filename = os.path.join(
+        default_root_dir, f"episode={num_validation}_val-score={last_score}.pt"
     )
-    for nn_type in ["gnn", "mm", "explore"]:
-        filename = filename_prefix + "_" + nn_type + ".pt"
-        val_filenames["current"][nn_type] = filename
-        torch.save(dqn[nn_type].state_dict(), filename)
+    val_filenames["last"] = filename
 
-    if current_score > best_score:
-        val_filenames["best"] = val_filenames["current"]
+    if val_filenames["best"] is None:
+        val_filenames["best"] = filename
+        torch.save(dqn.state_dict(), filename)
 
-    scores_to_compare = []
-    for filename in val_filenames:
-        score = int(filename.split("val-score=")[-1].split("/")[-1])
-        scores_to_compare.append(score)
-
-    indexes = list_duplicates_of(scores_to_compare, max(scores_to_compare))
-    if if_duplicate_take_first:
-        file_to_keep = val_filenames[indexes[0]]
     else:
-        file_to_keep = val_filenames[indexes[-1]]
+        best_score = int(val_filenames["best"].split("val-score=")[-1].split(".pt")[0])
 
-    for filename in val_filenames:
-        if filename != file_to_keep:
-            os.remove(filename)
-            val_filenames.remove(filename)
+        if last_score > best_score:
+            os.remove(val_filenames["best"])
+            val_filenames["best"] = filename
+            torch.save(dqn.state_dict(), filename)
 
 
 def save_states_q_values_actions(

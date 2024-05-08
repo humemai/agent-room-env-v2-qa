@@ -4,19 +4,24 @@ import datetime
 import os
 from copy import deepcopy
 import shutil
+from typing import Literal
 
 import gymnasium as gym
 import numpy as np
 import torch
 import torch.optim as optim
 from humemai.utils import is_running_notebook, write_yaml
-from humemai.policy import encode_all_observations, manage_memory
 from humemai.memory import EpisodicMemory, MemorySystems, SemanticMemory, ShortMemory
-from humemai.policy import answer_question, encode_observation, explore, manage_memory
+from humemai.policy import (
+    encode_all_observations,
+    answer_question,
+    encode_observation,
+    explore,
+    manage_memory,
+)
 from room_env.envs.room2 import RoomEnv2
 
 from .nn import GNN
-from .nn import MLP
 from .utils import (
     ReplayBuffer,
     plot_results,
@@ -24,6 +29,9 @@ from .utils import (
     save_states_q_values_actions,
     save_validation,
     select_action,
+    target_hard_update,
+    update_epsilon,
+    update_model,
 )
 
 
@@ -53,12 +61,10 @@ class DQNAgent:
         capacity: dict = {
             "episodic": 16,
             "semantic": 16,
-            "short": 1,
+            "short": 10,
         },
-        agent_to_episodic: bool = True,
         pretrain_semantic: str | bool = False,
         gnn_params: dict = {},
-        mlp_params: dict = {},
         run_test: bool = True,
         num_samples_for_results: int = 10,
         plotting_interval: int = 10,
@@ -71,7 +77,7 @@ class DQNAgent:
         env_config: dict = {
             "question_prob": 1.0,
             "terminates_at": 99,
-            "randomize_observations": "objects",
+            "randomize_observations": "all",
             "room_size": "l",
             "rewards": {"correct": 1, "wrong": 0, "partial": 0},
             "make_everything_static": False,
@@ -81,7 +87,6 @@ class DQNAgent:
         },
         ddqn: bool = True,
         default_root_dir: str = "./training-results/stochastic-objects/DQN/",
-        run_handcrafted_baselines: bool = False,
     ) -> None:
         """Initialization.
 
@@ -97,12 +102,8 @@ class DQNAgent:
             min_epsilon: minimum epsilon
             gamma: discount factor
             capacity: The capacity of each human-like memory systems
-            agent_to_episodic: If true, the agent's location related observations will
-                be stored in its episodic memory system. If false, the agent decides
-                what to do with its memory management policy
             pretrain_semantic: whether to pretrain the semantic memory system.
             gnn_params: parameters for the neural network (GNN)
-            mlp_params: parameters for the neural network (MLP)
             run_test: whether to run test
             num_samples_for_results: The number of samples to validate / test the agent.
             plotting_interval: interval to plot results
@@ -125,11 +126,13 @@ class DQNAgent:
                     "xs", "s", "m", or "l".
             ddqn: whether to use double DQN
             default_root_dir: default root directory to save results
-            run_handcrafted_baselines: whether to run handcrafted baselines
 
         """
         params_to_save = deepcopy(locals())
         del params_to_save["self"]
+        self.default_root_dir = os.path.join(
+            default_root_dir, str(datetime.datetime.now())
+        )
         self._create_directory(params_to_save)
 
         self.train_seed = train_seed
@@ -165,18 +168,14 @@ class DQNAgent:
         ]
         self.num_samples_for_results = num_samples_for_results
         self.capacity = capacity
-        self.agent_to_episodic = agent_to_episodic
         self.pretrain_semantic = pretrain_semantic
         self.env = gym.make(self.env_str, **self.env_config)
-        self.default_root_dir = os.path.join(
-            default_root_dir, str(datetime.datetime.now())
-        )
 
         self.device = torch.device(device)
         print(f"Running on {self.device}")
 
         self.ddqn = ddqn
-        self.val_filenames = {"gnn": None, "mm": None, "explore": None, "score": None}
+        self.val_filenames = {"best": None, "last": None}
         self.is_notebook = is_running_notebook()
         self.num_iterations = num_iterations
         self.plotting_interval = plotting_interval
@@ -193,36 +192,29 @@ class DQNAgent:
         self.warm_start = warm_start
         assert self.batch_size <= self.warm_start <= self.replay_buffer_size
 
+        self.action_mm2str = {0: "episodic", 1: "semantic", 2: "forget"}
+        self.action_explore2str = {
+            0: "north",
+            1: "east",
+            2: "south",
+            3: "west",
+            4: "stay",
+        }
+
+        self.gnn_params = gnn_params
         self.gnn_params["device"] = self.device
         self.gnn_params["entities"] = self.env.unwrapped.entities
         self.gnn_params["relations"] = self.env.unwrapped.relations
-        self.mlp_params["device"] = self.device
-        self.dqn = {
-            "gnn": GNN(**self.gnn_params),
-            "mm": MLP(**self.mlp_params, num_outputs=3),
-            "explore": MLP(**self.mlp_params, num_outputs=5),
-        }
-        self.dqn_target = {
-            "gnn": GNN(**self.gnn_params),
-            "mm": MLP(**self.mlp_params, num_outputs=3),
-            "explore": MLP(**self.mlp_params, num_outputs=5),
-        }
-        for nn_type in ["gnn", "mm", "explore"]:
-            self.dqn_target[nn_type].load_state_dict(self.dqn[nn_type].state_dict())
-            self.dqn_target[nn_type].eval()
+        self.dqn = GNN(**self.gnn_params)
+        self.dqn_target = GNN(**self.gnn_params)
+        self.dqn_target.load_state_dict(self.dqn.state_dict())
+        self.dqn_target.eval()
 
-        self.replay_buffer = {}
-        for policy_type in ["mm", "explore"]:
-            self.replay_buffer[policy_type] = ReplayBuffer(
-                observation_type="dict", size=replay_buffer_size, batch_size=batch_size
-            )
+        self.replay_buffer_mm = ReplayBuffer(self.replay_buffer_size, self.batch_size)
+        self.replay_buffer_explore = ReplayBuffer(replay_buffer_size, batch_size)
 
         # optimizer
-        self.optimizer = optim.Adam(
-            list(self.dqn["gnn"].parameters())
-            + list(self.dqn["mm"].parameters())
-            + list(self.dqn["explore"].parameters())
-        )
+        self.optimizer = optim.Adam(self.dqn.parameters())
 
         self.q_values = {
             "train": {"mm": [], "explore": []},
@@ -230,8 +222,7 @@ class DQNAgent:
             "test": {"mm": [], "explore": []},
         }
 
-        if run_handcrafted_baselines:
-            self.run_handcrafted_baselines()
+        self.init_memory_systems()
 
     def _create_directory(self, params_to_save: dict) -> None:
         """Create the directory to store the results."""
@@ -279,20 +270,417 @@ class DQNAgent:
         """
         return deepcopy(self.memory_systems.return_as_a_dict_list())
 
+    def move_agent_to_episodic_memory(self) -> None:
+        """Move the agent's location related short-term memories to the episodic memory
+        system."""
+        for mem_short in self.memory_systems.short:
+            if mem_short[0] == "agent":
+                manage_memory(self.memory_systems, "episodic", mem_short)
+
+    def step_a(
+        self,
+        greedy: bool,
+        save_q_mm: bool,
+        train_val_test: Literal["train", "val", "test"] | None = None,
+    ) -> None:
+        """Step a of the algorithm.
+
+        $\pi_{mm}$:
+            IN:  [    ,     ,     ,     ,     ]    OUT: [s   , a   ,     ,     ,     ]
+        $\pi_{expore}$:
+            IN:  [    ,     ,     ,     ,     ]    OUT: [    ,     ,     ,     ,     ]
+        $\pi_{qa}$:
+            IN:  [    ,     ,     ,     ,     ]    OUT: [    ,     ,     ,     ,     ]
+
+        blanks are Nones
+
+        Args:
+            greedy: whether to use greedy policy
+            save_q_mm: whether to save q_values
+            train_val_test: whether to train, validate, or test
+
+        """
+        self.init_memory_systems()
+        observations, info = self.env.reset()
+        self.observations = observations["room"]
+        self.questions = observations["questions"]
+        encode_all_observations(self.memory_systems, self.observations)
+        self.move_agent_to_episodic_memory()
+
+        # mm
+        s_mm = self.get_deepcopied_memory_state()
+        a_mm, q_mm = select_action(  # the dimension of a_mm is [num_actions_taken]
+            state=s_mm,
+            greedy=greedy,
+            dqn=self.dqn,
+            epsilon=self.epsilon,
+            policy_type="mm",
+        )
+        assert len(a_mm) == len(self.memory_systems.short)
+        for a_mm_, mem_short in zip(a_mm, self.memory_systems.short):
+            manage_memory(self.memory_systems, self.action_mm2str[a_mm_], mem_short)
+
+        self.tuple_mm = [s_mm, a_mm, None, None, None]
+
+        if save_q_mm:
+            for q_mm_ in q_mm:
+                self.q_values[train_val_test]["mm"].append(q_mm_)
+
+        return s_mm, q_mm, a_mm
+
+    def step_b(
+        self,
+        greedy: bool,
+        save_mm_to_replay_buffer: bool,
+        save_q_explore: bool,
+        train_val_test: Literal["train", "val", "test"] | None = None,
+    ) -> tuple[float, bool]:
+        """Step b of the algorithm.
+
+        $\pi_{mm}$:
+            IN:  [s   , a   ,     ,     ,     ]    OUT: [s   , a   , r   , s'  , done]
+        $\pi_{expore}$:
+            IN:  [    ,     ,     ,     ,     ]    OUT: [s   , a   , r   ,     ,     ]
+        $\pi_{qa}$:
+            IN:  [    ,     ,     ,     ,     ]    OUT: [s   , a   , r   ,     ,     ]
+
+        blanks are Nones
+
+        Out of the three (a, b, and c) steps, this is the only step that interacts
+        with the environment.
+
+        Args:
+            greedy: whether to use greedy policy
+            save_mm_to_replay_buffer: whether to save to replay buffer
+            save_q_explore: whether to save q_values
+            train_val_test: whether to train, validate, or test
+
+        Returns:
+            reward: reward from the environment
+            done: whether the episode is done
+
+        """
+        assert self.tuple_mm[2:] == [None, None, None]
+
+        # explore
+        s_explore = self.get_deepcopied_memory_state()
+
+        a_explore, q_explore = select_action(
+            state=s_explore,
+            greedy=greedy,
+            dqn=self.dqn,
+            epsilon=self.epsilon,
+            policy_type="explore",
+        )
+
+        # qa
+        a_qa = [
+            answer_question(
+                self.memory_systems,
+                self.qa_policy,
+                question,
+            )
+            for question in self.questions
+        ]
+
+        action_pair = (a_qa, self.action_explore2str[a_explore[0]])
+        (
+            observations,
+            reward,
+            done,
+            truncated,
+            info,
+        ) = self.env.step(action_pair)
+        done = done or truncated
+
+        self.observations = observations["room"]
+        self.questions = observations["questions"]
+        encode_all_observations(self.memory_systems, self.observations)
+        self.move_agent_to_episodic_memory()
+
+        # mm
+        s_next_mm = self.get_deepcopied_memory_state()
+
+        self.tuple_mm[2] = reward
+        self.tuple_mm[3] = s_next_mm
+        self.tuple_mm[4] = done
+
+        self.tuple_explore = [s_explore, None, None, None, None]
+        self.tuple_explore[1] = a_explore
+        self.tuple_explore[2] = reward
+
+        if save_mm_to_replay_buffer:
+            self.replay_buffer_mm.store(*self.tuple_mm)
+
+        if save_q_explore:
+            for q_explore_ in q_explore:
+                self.q_values[train_val_test]["explore"].append(q_explore_)
+
+        return s_explore, q_explore, a_explore, reward, done
+
+    def step_c(
+        self,
+        greedy: bool,
+        save_explore_to_replay_buffer: bool,
+        done: bool,
+        save_q_mm: bool,
+        train_val_test: Literal["train", "val", "test"] | None = None,
+    ) -> None:
+        """Step c of the algorithm.
+
+        $\pi_{mm}$:
+            IN:  [    ,     ,     ,     ,     ]    OUT: [s   , a   ,     ,     ,     ]
+        $\pi_{expore}$:
+            IN:  [s   , a   , r   ,     ,     ]    OUT: [s   , a   , r   , s'  , done]
+        $\pi_{qa}$:
+            IN:  [s   , a   , r   ,     ,     ]    OUT: [s   , a   , r   , s'  , done]
+
+        blanks are Nones
+
+        Args:
+            greedy: whether to use greedy policy
+            save_explore_to_replay_buffer: whether to save to replay buffer
+            done: whether the episode was done
+            save_q_mm: whether to save q_values
+            train_val_test: whether to train, validate, or test
+
+        """
+        assert self.tuple_explore[3:] == [None, None]
+
+        s_mm = self.get_deepcopied_memory_state()
+
+        # mm
+        a_mm, q_mm = select_action(
+            state=s_mm,
+            greedy=greedy,
+            dqn=self.dqn,
+            epsilon=self.epsilon,
+            policy_type="mm",
+        )
+
+        # the dimension of a_mm is [num_actions_taken]
+        assert len(a_mm) == len(self.memory_systems.short)
+        for a_mm_, mem_short in zip(a_mm, self.memory_systems.short):
+            manage_memory(self.memory_systems, self.action_mm2str[a_mm_], mem_short)
+
+        # explore
+        s_next_explore = self.get_deepcopied_memory_state()
+
+        self.tuple_mm = [s_mm, a_mm, None, None, None]
+        self.tuple_explore[3] = s_next_explore
+        self.tuple_explore[4] = done
+
+        if save_explore_to_replay_buffer:
+            self.replay_buffer_explore.store(*self.tuple_explore)
+
+        if save_q_mm:
+            for q_mm_ in q_mm:
+                self.q_values[train_val_test]["mm"].append(q_mm_)
+
+        return s_mm, q_mm, a_mm
+
     def fill_replay_buffer(self) -> None:
         """Make the replay buffer full in the beginning with the uniformly-sampled
         actions. The filling continues until it reaches the warm start size.
 
         """
-        raise NotImplementedError("Should be implemented by the inherited class!")
+        new_episode_starts = True
+        while (
+            len(self.replay_buffer_mm) < self.warm_start
+            or len(self.replay_buffer_explore) < self.warm_start
+        ):
+            if new_episode_starts:
+                s_mm, q_mm, a_mm = self.step_a(
+                    greedy=False,
+                    save_q_mm=False,
+                    train_val_test=None,
+                )
+                new_episode_starts = False
+
+            s_explore, q_explore, a_explore, reward, done = self.step_b(
+                greedy=False,
+                save_mm_to_replay_buffer=True,
+                save_q_explore=False,
+                train_val_test=None,
+            )
+            s_mm, q_mm, a_mm = self.step_c(
+                greedy=False,
+                save_explore_to_replay_buffer=True,
+                done=done,
+                save_q_mm=False,
+                train_val_test=None,
+            )
+
+            if done:
+                new_episode_starts = True
 
     def train(self) -> None:
-        """Train the explore agent."""
-        raise NotImplementedError("Should be implemented by the inherited class!")
+        """Train the agent."""
+        self.fill_replay_buffer()  # fill up the buffer till warm start size
+        self.num_validation = 0
+
+        self.epsilons = []
+        self.training_loss = []
+        self.scores = {"train": [], "val": [], "test": None}
+
+        self.dqn.train()
+
+        new_episode_starts = True
+        score = 0
+        self.iteration_idx = 0
+
+        while True:
+            if new_episode_starts:
+                s_mm, q_mm, a_mm = self.step_a(
+                    greedy=False,
+                    save_q_mm=True,
+                    train_val_test="train",
+                )
+                new_episode_starts = False
+
+            s_explore, q_explore, a_explore, reward, done = self.step_b(
+                greedy=False,
+                save_mm_to_replay_buffer=True,
+                save_q_explore=True,
+                train_val_test="train",
+            )
+            s_mm, q_mm, a_mm = self.step_c(
+                greedy=False,
+                save_explore_to_replay_buffer=True,
+                done=done,
+                save_q_mm=True,
+                train_val_test="train",
+            )
+            score += reward
+            self.iteration_idx += 1
+
+            if done:
+                new_episode_starts = True
+                self.scores["train"].append(score)
+                score = 0
+                with torch.no_grad():
+                    self.validate()
+
+            if not new_episode_starts:
+                loss = update_model(
+                    replay_buffer_mm=self.replay_buffer_mm,
+                    replay_buffer_explore=self.replay_buffer_explore,
+                    optimizer=self.optimizer,
+                    device=self.device,
+                    dqn=self.dqn,
+                    dqn_target=self.dqn_target,
+                    ddqn=self.ddqn,
+                    gamma=self.gamma,
+                )
+
+                self.training_loss.append(loss)
+
+                # linearly decay epsilon
+                self.epsilon = update_epsilon(
+                    self.epsilon,
+                    self.max_epsilon,
+                    self.min_epsilon,
+                    self.epsilon_decay_until,
+                )
+                self.epsilons.append(self.epsilon)
+
+                # if hard update is needed
+                if self.iteration_idx % self.target_update_interval == 0:
+                    target_hard_update(self.dqn, self.dqn_target)
+
+                # plotting & show training results
+                if (
+                    self.iteration_idx == self.num_iterations
+                    or self.iteration_idx % self.plotting_interval == 0
+                ):
+                    self.plot_results("all", save_fig=True)
+
+                if self.iteration_idx == self.num_iterations:
+                    break
+
+        with torch.no_grad():
+            self.test()
+
+        self.env.close()
+
+    def validate_test_middle(self, val_or_test: str) -> tuple[list, list, list, list]:
+        """A function shared by explore validation and test in the middle.
+
+        Args:
+            val_or_test: "val" or "test"
+
+        Returns:
+            scores_local: a list of total episode rewards
+            states_local: memory states
+            q_values_local: q values
+            actions_local: greey actions taken
+
+        """
+        scores_local = []
+        states_local = []
+        q_values_local = []
+        actions_local = []
+
+        for idx in range(self.num_samples_for_results):
+            new_episode_starts = True
+            score = 0
+            if idx == self.num_samples_for_results - 1:
+                save_useful = True
+
+            while True:
+                if new_episode_starts:
+                    s_mm, q_mm, a_mm = self.step_a(
+                        greedy=True,
+                        save_q_mm=save_useful,
+                        train_val_test=val_or_test,
+                    )
+                    new_episode_starts = False
+
+                    if save_useful:
+                        state = {"mm": s_mm}
+                        q_values = {"mm": q_mm}
+                        action = {"mm": a_mm}
+
+                s_explore, q_explore, a_explore, reward, done = self.step_b(
+                    greedy=True,
+                    save_mm_to_replay_buffer=False,
+                    save_q_explore=save_useful,
+                    train_val_test=val_or_test,
+                )
+
+                if save_useful:
+                    state["explore"] = s_explore
+                    q_values["explore"] = q_explore
+                    action["explore"] = a_explore
+
+                    states_local.append(state)
+                    q_values_local.append(q_values)
+                    actions_local.append(action)
+
+                s_mm, q_mm, a_mm = self.step_c(
+                    greedy=True,
+                    save_explore_to_replay_buffer=False,
+                    done=done,
+                    save_q_mm=save_useful,
+                    train_val_test=val_or_test,
+                )
+                score += reward
+
+                if save_useful:
+                    state = {"mm": s_mm}
+                    q_values = {"mm": q_mm}
+                    action = {"mm": a_mm}
+
+                if done:
+                    break
+
+            scores_local.append(score)
+
+        return scores_local, states_local, q_values_local, actions_local
 
     def validate(self) -> None:
-        for nn_type in ["gnn", "mm", "explore"]:
-            self.dqn[nn_type].eval()
+        """Validate the agent."""
+        self.dqn.eval()
         scores_temp, states, q_values, actions = self.validate_test_middle("val")
 
         save_validation(
@@ -308,27 +696,17 @@ class DQNAgent:
         )
         self.env.close()
         self.num_validation += 1
-        for nn_type in ["gnn", "mm", "explore"]:
-            self.dqn[nn_type].train()
+        self.dqn.train()
 
-    def test(self, checkpoint: dict[str, str] | None = None) -> None:
-        """Test the agent.
-
-        Args:
-            checkpoint: use if None
-
-        """
-        for nn_type in ["gnn", "mm", "explore"]:
-            if checkpoint is not None:
-                self.dqn[nn_type].load_state_dict(torch.load(self.checkpoint[nn_type]))
-            else:
-                self.dqn[nn_type].load_state_dict(
-                    torch.load(self.val_filenames["best"][nn_type])
-                )
-            self.dqn[nn_type].eval()
-
+    def test(self, checkpoint: str = None) -> None:
+        """Test the agent."""
+        self.dqn.eval()
         self.env_config["seed"] = self.test_seed
         self.env = gym.make(self.env_str, **self.env_config)
+
+        self.dqn.load_state_dict(torch.load(self.val_filenames["best"]))
+        if checkpoint is not None:
+            self.dqn.load_state_dict(torch.load(checkpoint))
 
         scores, states, q_values, actions = self.validate_test_middle("test")
         self.scores["test"] = scores
@@ -342,8 +720,7 @@ class DQNAgent:
 
         self.plot_results("all", save_fig=True)
         self.env.close()
-        for nn_type in ["gnn", "mm", "explore"]:
-            self.dqn[nn_type].train()
+        self.dqn.train()
 
     def plot_results(self, to_plot: str = "all", save_fig: bool = False) -> None:
         """Plot things for DQN training.

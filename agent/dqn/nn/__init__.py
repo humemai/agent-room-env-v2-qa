@@ -1,1 +1,1 @@
-from .lstm import LSTM
+from .gnn import GNN
