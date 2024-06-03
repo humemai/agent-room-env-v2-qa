@@ -7,9 +7,7 @@
 ```python
 capacity = {
     "episodic": 16,
-    "episodic_agent": 0,
     "semantic": 16,
-    "semantic_map": 0,
     "short": 1,
 }
 ```

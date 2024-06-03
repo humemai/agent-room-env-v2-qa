@@ -7,19 +7,10 @@ import shutil
 from typing import Literal
 
 import gymnasium as gym
-import numpy as np
 import torch
 import torch.optim as optim
 from humemai.utils import is_running_notebook, write_yaml
 from humemai.memory import EpisodicMemory, MemorySystems, SemanticMemory, ShortMemory
-from humemai.policy import (
-    encode_all_observations,
-    answer_question,
-    encode_observation,
-    explore,
-    manage_memory,
-)
-from room_env.envs.room2 import RoomEnv2
 
 from .nn import GNN
 from .utils import (
@@ -32,6 +23,11 @@ from .utils import (
     target_hard_update,
     update_epsilon,
     update_model,
+)
+from ..policy import (
+    encode_all_observations,
+    answer_question,
+    manage_memory,
 )
 
 
@@ -64,7 +60,11 @@ class DQNAgent:
             "short": 10,
         },
         pretrain_semantic: str | bool = False,
-        gnn_params: dict = {},
+        gnn_params: dict = {
+            "embedding_dim": 128,
+            "num_layers_GNN": 4,
+            "num_layers_MLP": 4,
+        },
         run_test: bool = True,
         num_samples_for_results: int = 10,
         plotting_interval: int = 10,
@@ -72,7 +72,7 @@ class DQNAgent:
         test_seed: int = 0,
         device: str = "cpu",
         mm_policy: str = "generalize",
-        qa_policy: str = "episodic_semantic",
+        qa_policy: str = "latest_strongest",
         explore_policy: str = "avoid_walls",
         env_config: dict = {
             "question_prob": 1.0,
@@ -151,13 +151,7 @@ class DQNAgent:
             "neural",
         ]
         self.qa_policy = qa_policy
-        assert self.qa_policy in [
-            "episodic_semantic",
-            "episodic",
-            "semantic",
-            "random",
-            "neural",
-        ]
+        assert self.qa_policy in ["random", "latest_strongest", "strongest_latest"]
         self.explore_policy = explore_policy
         assert self.explore_policy in [
             "random",
@@ -201,10 +195,16 @@ class DQNAgent:
             4: "stay",
         }
 
+        self.init_memory_systems()
+
         self.gnn_params = gnn_params
         self.gnn_params["device"] = self.device
-        self.gnn_params["entities"] = self.env.unwrapped.entities
-        self.gnn_params["relations"] = self.env.unwrapped.relations
+        self.gnn_params["entities"] = [
+            e for entities in self.env.unwrapped.entities.values() for e in entities
+        ]
+        self.gnn_params["relations"] = (
+            self.env.unwrapped.relations + self.memory_systems.qualifier_relations
+        )
         self.dqn = GNN(**self.gnn_params)
         self.dqn_target = GNN(**self.gnn_params)
         self.dqn_target.load_state_dict(self.dqn.state_dict())
@@ -222,8 +222,6 @@ class DQNAgent:
             "test": {"mm": [], "explore": []},
         }
 
-        self.init_memory_systems()
-
     def _create_directory(self, params_to_save: dict) -> None:
         """Create the directory to store the results."""
         os.makedirs(self.default_root_dir, exist_ok=True)
@@ -237,9 +235,7 @@ class DQNAgent:
         """Initialize the agent's memory systems. This has nothing to do with the
         replay buffer."""
         self.memory_systems = MemorySystems(
-            episodic=EpisodicMemory(
-                capacity=self.capacity["episodic"], remove_duplicates=False
-            ),
+            episodic=EpisodicMemory(capacity=self.capacity["episodic"]),
             semantic=SemanticMemory(capacity=self.capacity["semantic"]),
             short=ShortMemory(capacity=self.capacity["short"]),
         )
@@ -259,16 +255,17 @@ class DQNAgent:
                 freeze=False,
             )
 
-    def get_deepcopied_memory_state(self) -> dict:
+    def get_deepcopied_working_memory(self) -> list[list]:
         """Get a deepcopied memory state.
 
-        This is necessary because the memory state is a list of dictionaries, which is
+        This is necessary because the memory state is a list of lists, which is
         mutable.
 
         Returns:
-            deepcopied memory_state
+            deepcopied working memory
+
         """
-        return deepcopy(self.memory_systems.return_as_a_dict_list())
+        return deepcopy(self.memory_systems.working.to_list())
 
     def move_agent_to_episodic_memory(self) -> None:
         """Move the agent's location related short-term memories to the episodic memory
@@ -308,7 +305,7 @@ class DQNAgent:
         self.move_agent_to_episodic_memory()
 
         # mm
-        s_mm = self.get_deepcopied_memory_state()
+        s_mm = self.get_deepcopied_working_memory()
         a_mm, q_mm = select_action(  # the dimension of a_mm is [num_actions_taken]
             state=s_mm,
             greedy=greedy,
@@ -363,7 +360,7 @@ class DQNAgent:
         assert self.tuple_mm[2:] == [None, None, None]
 
         # explore
-        s_explore = self.get_deepcopied_memory_state()
+        s_explore = self.get_deepcopied_working_memory()
 
         a_explore, q_explore = select_action(
             state=s_explore,
@@ -399,7 +396,7 @@ class DQNAgent:
         self.move_agent_to_episodic_memory()
 
         # mm
-        s_next_mm = self.get_deepcopied_memory_state()
+        s_next_mm = self.get_deepcopied_working_memory()
 
         self.tuple_mm[2] = reward
         self.tuple_mm[3] = s_next_mm
@@ -447,7 +444,7 @@ class DQNAgent:
         """
         assert self.tuple_explore[3:] == [None, None]
 
-        s_mm = self.get_deepcopied_memory_state()
+        s_mm = self.get_deepcopied_working_memory()
 
         # mm
         a_mm, q_mm = select_action(
@@ -464,7 +461,7 @@ class DQNAgent:
             manage_memory(self.memory_systems, self.action_mm2str[a_mm_], mem_short)
 
         # explore
-        s_next_explore = self.get_deepcopied_memory_state()
+        s_next_explore = self.get_deepcopied_working_memory()
 
         self.tuple_mm = [s_mm, a_mm, None, None, None]
         self.tuple_explore[3] = s_next_explore
@@ -520,7 +517,7 @@ class DQNAgent:
         self.num_validation = 0
 
         self.epsilons = []
-        self.training_loss = []
+        self.training_loss = {"total": [], "mm": [], "explore": []}
         self.scores = {"train": [], "val": [], "test": None}
 
         self.dqn.train()
@@ -562,7 +559,7 @@ class DQNAgent:
                     self.validate()
 
             if not new_episode_starts:
-                loss = update_model(
+                loss_mm, loss_explore, loss = update_model(
                     replay_buffer_mm=self.replay_buffer_mm,
                     replay_buffer_explore=self.replay_buffer_explore,
                     optimizer=self.optimizer,
@@ -573,7 +570,9 @@ class DQNAgent:
                     gamma=self.gamma,
                 )
 
-                self.training_loss.append(loss)
+                self.training_loss["total"].append(loss)
+                self.training_loss["mm"].append(loss_mm)
+                self.training_loss["explore"].append(loss_explore)
 
                 # linearly decay epsilon
                 self.epsilon = update_epsilon(
@@ -626,6 +625,8 @@ class DQNAgent:
             score = 0
             if idx == self.num_samples_for_results - 1:
                 save_useful = True
+            else:
+                save_useful = False
 
             while True:
                 if new_episode_starts:
@@ -712,7 +713,11 @@ class DQNAgent:
         self.scores["test"] = scores
 
         save_final_results(
-            self.scores, self.training_loss, self.default_root_dir, self.q_values, self
+            self.scores,
+            self.training_loss,
+            self.default_root_dir,
+            self.q_values,
+            self,
         )
         save_states_q_values_actions(
             states, q_values, actions, self.default_root_dir, "test"
@@ -743,7 +748,6 @@ class DQNAgent:
             self.epsilons,
             self.q_values,
             self.iteration_idx,
-            self.action_space.n.item(),
             self.num_iterations,
             self.env.unwrapped.total_maximum_episode_rewards,
             self.default_root_dir,

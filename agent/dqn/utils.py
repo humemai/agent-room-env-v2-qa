@@ -34,19 +34,21 @@ class ReplayBuffer:
     copied from https://github.com/Curt-Park/rainbow-is-all-you-need
 
     Attributes:
-        obs_buf (np.ndarray): This is a np.ndarray of dictionaries. This is because
-            dictionary can take any type of data.
-        next_obs_buf (np.ndarray): This is a np.ndarray of dictionaries. This is because
-            dictionary can take any type of data.
-        acts_buf (np.ndarray): This is a np.ndarray of dictionaries. This is because
-            dictionary can take any type of data. In our scenario, an action is a vector
-            of integer whose length is variable.
-        rews_buf (np.ndarray): This is a np.ndarray of floats.
-        done_buf (np.ndarray): This is a np.ndarray of bools.
-        max_size (int): The maximum size of the buffer.
-        batch_size (int): The batch size to sample.
-        ptr(int): The pointer to the current index.
-        size (int): The current size of the buffer.
+        obs_buf (np.ndarray): Buffer for observations, initialized as an array of None
+            values of dtype=object.
+        next_obs_buf (np.ndarray): Buffer for next observations, initialized similarly
+            to obs_buf.
+        acts_buf (np.ndarray): Buffer for actions, initialized as an array of None
+            values of dtype=object.
+        rews_buf (np.ndarray): Buffer for rewards, initialized as an array of zeros
+            of dtype=np.float32.
+        done_buf (np.ndarray): Buffer for done flags, initialized as an array of zeros
+            of dtype=np.float32.
+        max_size (int): Maximum size of the buffer.
+        batch_size (int): Batch size for sampling from the buffer.
+        ptr (int): Pointer to the current position in the buffer.
+        size (int): Current size of the buffer.
+
 
     Example:
     ```
@@ -104,13 +106,22 @@ class ReplayBuffer:
             size: size of the buffer
             batch_size: batch size to sample
 
+        Raises:
+            ValueError: If batch_size is greater than size.
+
+        Note:
+            The obs_buf, next_obs_buf, and acts_buf are initialized with `None` values
+            and have `dtype=object` to accommodate arbitrary Python objects, ensuring
+            flexibility in storing different types of data.
+
         """
+
         if batch_size > size:
             raise ValueError("batch_size must be smaller than size")
 
-        self.obs_buf = np.array([{}] * size)
-        self.next_obs_buf = np.array([{}] * size)
-        self.acts_buf = np.array([{}] * size)
+        self.obs_buf = np.array([None] * size, dtype=object)
+        self.next_obs_buf = np.array([None] * size, dtype=object)
+        self.acts_buf = np.array([None] * size, dtype=object)
         self.rews_buf = np.zeros([size], dtype=np.float32)
         self.done_buf = np.zeros(size, dtype=np.float32)
         self.max_size, self.batch_size = size, batch_size
@@ -241,12 +252,11 @@ class MultiAgentReplayBuffer:
 
 
 def plot_results(
-    scores: dict,
-    training_loss: list,
-    epsilons: list,
-    q_values: dict,
+    scores: dict[str, list[float]],
+    training_loss: dict[str, list[float]],
+    epsilons: list[float],
+    q_values: dict[str, dict[str, list[float]]],
     iteration_idx: int,
-    number_of_actions: int,
     num_iterations: int,
     total_maximum_episode_rewards: int,
     default_root_dir: str,
@@ -256,13 +266,23 @@ def plot_results(
     """Plot things for DQN training.
 
     Args:
+        scores: a dictionary of scores for train, validation, and test.
+        training_loss: a dict of training losses for all, mm, and explore.
+        epsilons: a list of epsilons.
+        q_values: a dictionary of q_values for train, validation, and test.
+        iteration_idx: the current iteration index.
+        num_iterations: the total number of iterations.
+        total_maximum_episode_rewards: the total maximum episode rewards.
+        default_root_dir: the root directory where the results are saved.
         to_plot: what to plot:
-            training_td_loss
-            epsilons
-            scores
-            q_values_train
-            q_values_val
-            q_values_test
+            "all": plot everything
+            "training_td_loss": plot training td loss
+            "epsilons": plot epsilons
+            "scores": plot scores
+            "q_value_train": plot q_values for training
+            "q_value_val": plot q_values for validation
+            "q_value_test": plot q_values for test
+        save_fig: whether to save the figure or not
 
     """
     is_notebook = is_running_notebook()
@@ -306,8 +326,11 @@ def plot_results(
 
         plt.subplot(331)
         plt.title("training td loss")
-        plt.plot(training_loss)
+        plt.plot(training_loss["total"], label="total")
+        plt.plot(training_loss["mm"], label="mm")
+        plt.plot(training_loss["explore"], label="explore")
         plt.xlabel("update counts")
+        plt.legend(loc="upper left")
 
         plt.subplot(332)
         plt.title("epsilons")
@@ -317,9 +340,9 @@ def plot_results(
         for subplot_num, split in zip([334, 335, 336], ["train", "val", "test"]):
             plt.subplot(subplot_num)
             plt.title(f"Q-values (mm), {split}")
-            for action_number in range(number_of_actions):
+            for action_number in range(3):
                 plt.plot(
-                    [q_values_[action_number] for q_values_ in q_values[split]["mm"]],
+                    [q_value_[action_number] for q_value_ in q_values[split]["mm"]],
                     label=f"action {action_number}",
                 )
             plt.legend(loc="upper left")
@@ -328,11 +351,11 @@ def plot_results(
         for subplot_num, split in zip([337, 338, 339], ["train", "val", "test"]):
             plt.subplot(subplot_num)
             plt.title(f"Q-values (explore), {split}")
-            for action_number in range(number_of_actions):
+            for action_number in range(5):
                 plt.plot(
                     [
-                        q_values_[action_number]
-                        for q_values_ in q_values[split]["explore"]
+                        q_value_[action_number]
+                        for q_value_ in q_values[split]["explore"]
                     ],
                     label=f"action {action_number}",
                 )
@@ -352,14 +375,19 @@ def plot_results(
     elif to_plot == "training_td_loss":
         plt.figure()
         plt.title("training td loss")
-        plt.plot(training_loss)
+        plt.plot(training_loss["total"], label="total")
+        plt.plot(training_loss["mm"], label="mm")
+        plt.plot(training_loss["explore"], label="explore")
         plt.xlabel("update counts")
+        plt.legend(loc="upper left")
+        plt.subplots_adjust(hspace=0.5)
 
     elif to_plot == "epsilons":
         plt.figure()
         plt.title("epsilons")
         plt.plot(epsilons)
         plt.xlabel("update counts")
+        plt.subplots_adjust(hspace=0.5)
 
     elif to_plot == "scores":
         plt.figure()
@@ -393,26 +421,37 @@ def plot_results(
             )
             plt.xlabel("episode")
         plt.legend(loc="upper left")
+        plt.subplots_adjust(hspace=0.5)
 
     else:
-        pass
+        plt.figure(figsize=(20, 13))
 
-    for split in ["train", "val", "test"]:
-        if to_plot == f"q_values_{split}":
-            plt.figure(figsize=(20, 13))
-            for subplot_num, policy in zip([121, 122], ["mm", "explore"]):
-                plt.subplot(subplot_num)
-                plt.title(f"Q-values ({policy}), {split}")
-                for action_number in range(number_of_actions):
-                    plt.plot(
-                        [
-                            q_values_[action_number]
-                            for q_values_ in q_values[split][policy]
-                        ],
-                        label=f"action {action_number}",
-                    )
-                plt.legend(loc="upper left")
-                plt.xlabel("number of actions")
+        for subplot_num, split in zip([231, 232, 233], ["train", "val", "test"]):
+            plt.subplot(subplot_num)
+            plt.title(f"Q-values (mm), {split}")
+            for action_number in range(3):
+                plt.plot(
+                    [q_value_[action_number] for q_value_ in q_values[split]["mm"]],
+                    label=f"action {action_number}",
+                )
+            plt.legend(loc="upper left")
+            plt.xlabel("number of actions")
+
+        for subplot_num, split in zip([234, 235, 236], ["train", "val", "test"]):
+            plt.subplot(subplot_num)
+            plt.title(f"Q-values (explore), {split}")
+            for action_number in range(5):
+                plt.plot(
+                    [
+                        q_value_[action_number]
+                        for q_value_ in q_values[split]["explore"]
+                    ],
+                    label=f"action {action_number}",
+                )
+            plt.legend(loc="upper left")
+            plt.xlabel("number of actions")
+
+        plt.subplots_adjust(hspace=0.5)
 
 
 def console(
@@ -444,18 +483,28 @@ def console(
             f"{total_maximum_episode_rewards}"
         )
 
-    tqdm.write(f"training loss: {training_loss[-1]}\n")
+    tqdm.write(f"training loss (all): {training_loss['total'][-1]}\n")
     print()
 
 
 def save_final_results(
-    scores: dict,
-    training_loss: list,
+    scores: dict[str, list[float]],
+    training_loss: dict[str, list[float]],
     default_root_dir: str,
-    q_values: dict,
+    q_values: dict[str, dict[str, list[float]]],
     self: object,
 ) -> None:
-    """Save dqn train / val / test results."""
+    """Save dqn train / val / test results.
+
+    Args:
+        scores: a dictionary of scores for train, validation, and test.
+        training_loss: a dict of training losses for all, mm, and explore.
+        training_loss_explore: a list of training losses for explore.
+        default_root_dir: the root directory where the results are saved.
+        q_values: a dictionary of q_values for train, validation, and test.
+        self: the agent object.
+
+    """
     results = {
         "train_score": scores["train"],
         "validation_score": [
@@ -476,16 +525,44 @@ def save_final_results(
     write_pickle(self, os.path.join(default_root_dir, "agent.pkl"))
 
 
-def compute_loss(
-    batch_mm: dict,
-    batch_explore: dict,
+def find_non_masked_rows(mask: torch.Tensor) -> list[torch.Tensor]:
+    """
+    Identifies which rows are completely masked (all zeros) in each batch.
+
+    Args:
+        mask: A tensor of shape [batch_size, num_items, num_features]
+                             containing binary values (0s and 1s).
+
+    Returns:
+        masked_indices: A list where each element is a tensor containing the indices of
+            fully masked rows for each batch.
+
+    """
+    # Assuming mask values are 0 for masked and 1 for unmasked
+    # Sum across the last dimension (features), we want rows where the sum is 0
+    row_sums = mask.sum(dim=2)
+
+    # Identify rows where the sum is 0 (all features are masked)
+    masked_rows = row_sums != 0
+
+    # Optionally, get the indices of the masked rows
+    masked_indices = [
+        torch.nonzero(masked_batch, as_tuple=False).squeeze(1)
+        for masked_batch in masked_rows
+    ]
+
+    return masked_indices
+
+
+def compute_loss_mm(
+    batch: dict,
     device: str,
-    dqn: dict[str, torch.nn.Module],
-    dqn_target: dict[str, torch.nn.Module],
+    dqn: torch.nn.Module,
+    dqn_target: torch.nn.Module,
     ddqn: str,
     gamma: float,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return the DQN td loss.
+) -> torch.Tensor:
+    """Return the DQN td loss for the memory management policy.
 
     G_t   = r + gamma * v(s_{t+1})  if state != Terminal
           = r                       otherwise
@@ -504,55 +581,124 @@ def compute_loss(
         gamma: discount factor
 
     Returns:
-        loss_mm, loss_explore: TD losses for memory management and explore
+        loss_mm: TD loss for memory management
 
     """
-    s_mm = batch_mm["obs"]
-    s_next_mm = batch_mm["next_obs"]
-    a_mm = batch_mm["acts"]
-    r_mm = torch.FloatTensor(batch_mm["rews"].reshape(-1, 1)).to(device)
-    d_mm = torch.FloatTensor(batch_mm["done"].reshape(-1, 1)).to(device)
+    state = batch["obs"]
+    state_next = batch["next_obs"]
+    action = batch["acts"]
+    reward = torch.FloatTensor(batch["rews"].reshape(-1, 1)).to(device)
+    done = torch.FloatTensor(batch["done"].reshape(-1, 1)).to(device)
 
-    s_explore = batch_explore["obs"]
-    s_next_explore = batch_explore["next_obs"]
-    a_explore = batch_explore["acts"]
-    r_explore = torch.FloatTensor(batch_explore["rews"].reshape(-1, 1)).to(device)
-    d_explore = torch.FloatTensor(batch_explore["done"].reshape(-1, 1)).to(device)
+    # Forward pass on current state to get Q-values
+    q_value_current = dqn(state, policy_type="mm")
 
-    assert np.array_equal(r_mm, r_explore), "Rewards are not the same."
-    assert np.array_equal(d_mm, d_explore), "Dones are not the same."
-
-    # MEMORY MANAGEMENT
-    curr_q_value_mm = dqn(s_mm, policy="mm")  # [batch_size, num_actions]
-
-    # EXPLORE
-    curr_q_value_explore = dqn(s_mm, policy="explore")
-
-    a_explore = (
-        torch.LongTensor([item[0] for item in a_explore]).reshape(-1, 1).to(device)
-    )
-    curr_q_value_explore = curr_q_value_explore.gather(dim=1, index=a_explore)
+    # Forward pass on next state to get Q-values
+    q_value_next = dqn_target(state_next, policy_type="mm")
 
     if ddqn:
-        next_q_value_explore = (
-            dqn_target(s_next_explore, policy="explore")
-            .gather(
-                1, dqn(s_next_explore, policy="explore").argmax(dim=1, keepdim=True)
-            )
-            .detach()
-        )
+        q_value_for_action = dqn(state_next, policy_type="mm")
+
+    q_value_current_batch = []
+    q_value_target_batch = []
+
+    min_lens = [min(len(i), len(j)) for i, j in zip(q_value_current, q_value_next)]
+
+    for idx in range(len(min_lens)):
+        min_len = min_lens[idx]
+
+        action_ = torch.tensor(action[idx][:min_len]).reshape(-1, 1).to(device)
+        q_value_current_ = q_value_current[idx][:min_len].gather(1, action_)
+        q_value_next_ = q_value_next[idx][:min_len]
+
+        if ddqn:
+            # Double DQN: Use current DQN to select actions, target DQN to evaluate
+            # those actions
+            q_value_for_action_ = q_value_for_action[idx][:min_len]
+            action_next = q_value_for_action_.argmax(dim=1, keepdim=True)
+            q_value_next_ = q_value_next_.gather(1, action_next).detach()
+        else:
+            # Vanilla DQN: Use target DQN to get max Q-value for next state
+            q_value_next_ = q_value_next_.max(dim=1, keepdim=True)[0].detach()
+
+        # Compute the target Q-values considering whether the state is terminal
+        q_value_target_ = reward[idx] + gamma * q_value_next_ * (1 - done[idx])
+
+        q_value_current_batch.append(q_value_current_)
+        q_value_target_batch.append(q_value_target_)
+
+    q_value_current_batch = torch.concat(q_value_current_batch, dim=0)
+    q_value_target_batch = torch.concat(q_value_target_batch, dim=0)
+
+    # Calculate loss
+    loss = F.smooth_l1_loss(q_value_current_batch, q_value_target_batch)
+
+    return loss
+
+
+def compute_loss_explore(
+    batch: dict,
+    device: str,
+    dqn: torch.nn.Module,
+    dqn_target: torch.nn.Module,
+    ddqn: str,
+    gamma: float,
+) -> torch.Tensor:
+    """Return the DQN td loss for explore policy.
+
+    G_t   = r + gamma * v(s_{t+1})  if state != Terminal
+          = r                       otherwise
+
+    Args:
+        batch: A dictionary of samples from the replay buffer.
+            obs: np.ndarray,
+            act: np.ndarray,
+            rew: float,
+            next_obs: np.ndarray,
+            done: bool,
+        device: cpu or cuda
+        dqn: dqn model
+        dqn_target: dqn target model
+        ddqn: whether to use double dqn or not
+        gamma: discount factor
+
+    Returns:
+        loss: TD loss for the explore policy
+
+    """
+    state = batch["obs"]
+    state_next = batch["next_obs"]
+    action = batch["acts"]
+    action = torch.tensor([torch.tensor(a) for a in action]).reshape(-1, 1).to(device)
+    reward = torch.FloatTensor(batch["rews"].reshape(-1, 1)).to(device)
+    done = torch.FloatTensor(batch["done"].reshape(-1, 1)).to(device)
+
+    # Forward pass on current state to get Q-values
+    q_value_current = dqn(state, policy_type="explore")
+    q_value_current = torch.concat(q_value_current)
+    q_value_current = q_value_current.gather(1, action)
+
+    q_value_next = dqn_target(state_next, policy_type="explore")
+    q_value_next = torch.concat(q_value_next)
+
+    if ddqn:
+        # Double DQN: Use current DQN to select actions, target DQN to evaluate those
+        # actions
+        q_value_for_action = dqn(state_next, policy_type="explore")
+        q_value_for_action = torch.concat(q_value_for_action)
+        action_next = q_value_for_action.argmax(dim=1, keepdim=True)
+        q_value_next = q_value_next.gather(1, action_next).detach()
     else:
-        next_q_value_explore = (
-            dqn_target(s_next_explore, policy="explore")
-            .max(dim=1, keepdim=True)[0]
-            .detach()
-        )
-    mask_explore = 1 - d_explore
-    target = (r_explore + gamma * next_q_value_explore * mask_explore).to(device)
+        # Vanilla DQN: Use target DQN to get max Q-value for next state
+        q_value_next = q_value_next.max(dim=1, keepdim=True)[0].detach()
 
-    loss_explore = F.smooth_l1_loss(curr_q_value_explore, target)
+    # Compute the target Q-values considering whether the state is terminal
+    q_value_target = reward + gamma * q_value_next * (1 - done)
 
-    return loss_mm, loss_explore
+    # Calculate loss
+    loss = F.smooth_l1_loss(q_value_current, q_value_target)
+
+    return loss
 
 
 def update_model(
@@ -564,7 +710,7 @@ def update_model(
     dqn_target: dict[str, torch.nn.Module],
     ddqn: str,
     gamma: float,
-    loss_weights: tuple[float, float] = [0.5, 0.5],
+    loss_weights: dict[str, int] = {"mm": 0.5, "explore": 0.5},
 ) -> tuple[float, float, float]:
     """Update the model by gradient descent.
 
@@ -587,11 +733,15 @@ def update_model(
     buffer_combined = MultiAgentReplayBuffer(replay_buffer_mm, replay_buffer_explore)
     batch_mm, batch_explore = buffer_combined.sample_batch(sample_same_index=True)
 
-    loss_mm, loss_explore = compute_loss(
-        batch_mm, batch_explore, device, dqn, dqn_target, ddqn, gamma
+    assert np.array_equal(batch_mm["rews"], batch_explore["rews"])
+    assert np.array_equal(batch_mm["done"], batch_explore["done"])
+
+    loss_mm = compute_loss_mm(batch_mm, device, dqn, dqn_target, ddqn, gamma)
+    loss_explore = compute_loss_explore(
+        batch_explore, device, dqn, dqn_target, ddqn, gamma
     )
 
-    loss = loss_weights[0] * loss_mm + loss_weights[1] * loss_explore
+    loss = loss_weights["mm"] * loss_mm + loss_weights["explore"] * loss_explore
 
     optimizer.zero_grad()
     loss.backward()
@@ -628,15 +778,15 @@ def select_action(
 
     """
     # Since dqn requires a batch dimension, we need to encapsulate the state in a list
-    q_values = dqn(np.array([state]), policy_type=policy_type).detach().cpu().tolist()
+    q_values = dqn(np.array([state], dtype=object), policy_type=policy_type)
 
-    # remove the dummy batch dimension to make [num_actions_taken, action_space_dim]
-    q_values = q_values[0]
+    q_values = q_values[0]  # remove the dummy batch dimension
+    q_values = q_values.detach().cpu()
 
-    action_space_dim = len(q_values[0])
+    action_space_dim = q_values.shape[1]
 
     if greedy or epsilon < np.random.random():
-        selected_actions = [argmax(q_values_) for q_values_ in q_values]
+        selected_actions = [argmax(q_value_) for q_value_ in q_values]
     else:
         selected_actions = [random.randint(0, action_space_dim - 1) for _ in q_values]
 
@@ -704,10 +854,10 @@ def save_states_q_values_actions(
     if val_or_test.lower() == "val":
         filename = os.path.join(
             default_root_dir,
-            f"states_q_values_actions_val_episode={num_validation}.yaml",
+            f"states_q_value_actions_val_episode={num_validation}.yaml",
         )
     else:
-        filename = os.path.join(default_root_dir, "states_q_values_actions_test.yaml")
+        filename = os.path.join(default_root_dir, "states_q_value_actions_test.yaml")
 
     assert len(states) == len(q_values) == len(actions)
     to_save = [
