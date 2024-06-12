@@ -62,8 +62,8 @@ class DQNAgent:
         pretrain_semantic: str | bool = False,
         gnn_params: dict = {
             "embedding_dim": 128,
-            "num_layers_GNN": 4,
-            "num_layers_MLP": 4,
+            "num_layers_GNN": 8,
+            "num_layers_MLP": 8,
         },
         run_test: bool = True,
         num_samples_for_results: int = 10,
@@ -594,7 +594,7 @@ class DQNAgent:
                 ):
                     self.plot_results("all", save_fig=True)
 
-                if self.iteration_idx == self.num_iterations:
+                if self.iteration_idx >= self.num_iterations:
                     break
 
         with torch.no_grad():
@@ -700,7 +700,12 @@ class DQNAgent:
         self.dqn.train()
 
     def test(self, checkpoint: str = None) -> None:
-        """Test the agent."""
+        """Test the agent.
+
+        Args:
+            checkpoint: The checkpoint to load. If None, the best checkpoint is loaded.
+
+        """
         self.dqn.eval()
         self.env_config["seed"] = self.test_seed
         self.env = gym.make(self.env_str, **self.env_config)
