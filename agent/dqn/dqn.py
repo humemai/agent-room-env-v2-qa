@@ -10,7 +10,7 @@ import gymnasium as gym
 import torch
 import torch.optim as optim
 from humemai.utils import is_running_notebook, write_yaml
-from humemai.memory import EpisodicMemory, MemorySystems, SemanticMemory, ShortMemory
+from humemai.memory import ShortMemory, LongMemory, MemorySystems
 
 from .nn import GNN
 from .utils import (
@@ -55,8 +55,7 @@ class DQNAgent:
         min_epsilon: float = 0.1,
         gamma: float = 0.9,
         capacity: dict = {
-            "episodic": 16,
-            "semantic": 16,
+            "long": 16,
             "short": 10,
         },
         pretrain_semantic: str | bool = False,
@@ -235,9 +234,8 @@ class DQNAgent:
         """Initialize the agent's memory systems. This has nothing to do with the
         replay buffer."""
         self.memory_systems = MemorySystems(
-            episodic=EpisodicMemory(capacity=self.capacity["episodic"]),
-            semantic=SemanticMemory(capacity=self.capacity["semantic"]),
             short=ShortMemory(capacity=self.capacity["short"]),
+            long=LongMemory(capacity=self.capacity["long"]),
         )
 
         assert self.pretrain_semantic in [False, "exclude_walls", "include_walls"]
@@ -249,10 +247,8 @@ class DQNAgent:
             room_layout = self.env.unwrapped.return_room_layout(exclude_walls)
 
             assert self.capacity["semantic"] > 0
-            _ = self.memory_systems.semantic.pretrain_semantic(
-                semantic_knowledge=room_layout,
-                return_remaining_space=False,
-                freeze=False,
+            self.memory_systems.semantic.pretrain_semantic(
+                semantic_knowledge=room_layout
             )
 
     def get_deepcopied_working_memory(self) -> list[list]:
@@ -265,11 +261,13 @@ class DQNAgent:
             deepcopied working memory
 
         """
-        return deepcopy(self.memory_systems.working.to_list())
+        return deepcopy(self.memory_systems.get_working_memory())
 
-    def move_agent_to_episodic_memory(self) -> None:
-        """Move the agent's location related short-term memories to the episodic memory
-        system."""
+    def save_agent_as_episodic_memory(self) -> None:
+        """Move the agent's location related short-term memories to the long-term
+        memory system as episodic memories.
+
+        """
         for mem_short in self.memory_systems.short:
             if mem_short[0] == "agent":
                 manage_memory(self.memory_systems, "episodic", mem_short)
@@ -302,7 +300,7 @@ class DQNAgent:
         self.observations = observations["room"]
         self.questions = observations["questions"]
         encode_all_observations(self.memory_systems, self.observations)
-        self.move_agent_to_episodic_memory()
+        self.save_agent_as_episodic_memory()
 
         # mm
         s_mm = self.get_deepcopied_working_memory()
@@ -393,7 +391,7 @@ class DQNAgent:
         self.observations = observations["room"]
         self.questions = observations["questions"]
         encode_all_observations(self.memory_systems, self.observations)
-        self.move_agent_to_episodic_memory()
+        self.save_agent_as_episodic_memory()
 
         # mm
         s_next_mm = self.get_deepcopied_working_memory()

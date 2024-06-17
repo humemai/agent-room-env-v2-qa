@@ -3,14 +3,10 @@
 The trained neural network policies are not implemented yet.
 """
 
-import random
 from typing import Literal
+import random
 
-import numpy as np
-import torch
-
-from humemai.memory import EpisodicMemory, MemorySystems, SemanticMemory, ShortMemory
-from .utils import argmax
+from humemai.memory import ShortMemory, LongMemory, MemorySystems
 
 
 def encode_observation(memory_systems: MemorySystems, obs: list[str | int]) -> None:
@@ -26,7 +22,6 @@ def encode_observation(memory_systems: MemorySystems, obs: list[str | int]) -> N
     """
     mem_short = ShortMemory.ob2short(obs)
     memory_systems.short.add(mem_short)
-    memory_systems.working.update()
 
 
 def encode_all_observations(
@@ -44,73 +39,49 @@ def encode_all_observations(
         encode_observation(memory_systems, obs)
 
 
-def find_agent_current_location(memory_systems: MemorySystems) -> str:
+def find_agent_current_location(memory_systems: MemorySystems) -> str | None:
     """Find the current location of the agent.
 
-    looks up the episodic. If fails, it looks up the semantic.
-    If all fails, it returns None.
+    Only look up the episodic. If fails, return None.
 
     Args:
         MemorySystems
 
     Returns:
-        agent_current_location: str
+        agent_current_location: str | None
 
     """
-    if hasattr(memory_systems, "episodic"):
-        mems = [
-            mem
-            for mem in memory_systems.episodic
-            if mem[0] == "agent" and mem[1] == "atlocation"
-        ]
-        if len(mems) > 0:
-            agent_current_location = mems[-1][2]
-            return agent_current_location
+    mems_episodic = []
+    for mem in memory_systems.get_working_memory(sort_by="timestamp"):
+        if mem[0] == "agent" and mem[1] == "atlocation" and "timestamp" in mem[-1]:
+            mems_episodic.append(mem)
 
-    if hasattr(memory_systems, "semantic"):
-        mems = [
-            mem
-            for mem in memory_systems.semantic
-            if mem[0] == "agent" and mem[1] == "atlocation"
-        ]
-        if len(mems) > 0:
-            agent_current_location = mems[-1][2]
-            return agent_current_location
+    if len(mems_episodic) > 0:
+        agent_current_location = mems_episodic[-1][2]  # get the latest one
+        return agent_current_location
 
     return None
 
 
 def find_visited_locations(
     memory_systems: MemorySystems,
-) -> dict[str, list[list[str, int]]]:
+    sort_by: Literal["timestamp", "strength"] = "timestamp",
+) -> dict[str, list[str]]:
     """Find the locations that the agent has visited so far.
 
     Args:
         MemorySystems: MemorySystems
+        sort_by: "timestamp" or "strength"
 
     Returns:
-        visited_locations: a dictionary of a list of [location, time/strength] pairs.
+        visited_locations: a list of visited locations
 
     """
-    visited_locations = {"episodic": [], "semantic": []}
+    visited_locations = []
 
-    for mem in memory_systems.episodic:
+    for mem in memory_systems.get_working_memory(sort_by=sort_by):
         if mem[0] == "agent" and mem[1] == "atlocation":
-            pair = [mem[2], mem[3]]
-            visited_locations["episodic"].append(pair)
-
-    # ascending order
-    sorted(visited_locations["episodic"], key=lambda x: x[1])
-
-    for mem in memory_systems.semantic:
-        if mem[0] == "agent" and mem[1] == "atlocation":
-            pair = [mem[2], mem[3]]
-            visited_locations["semantic"].append(pair)
-
-    # ascending order
-    sorted(visited_locations["semantic"], key=lambda x: x[1])
-
-    return visited_locations
+            visited_locations.append(mem[2])
 
 
 def explore(
