@@ -42,7 +42,7 @@ def encode_all_observations(
 def find_agent_current_location(memory_systems: MemorySystems) -> str | None:
     """Find the current location of the agent.
 
-    Only look up the episodic. If fails, return None.
+    Use the latest episodic memory about the agent's location.
 
     Args:
         MemorySystems
@@ -90,6 +90,11 @@ def explore(
 ) -> str:
     """Explore the room (sub-graph).
 
+    "random" policy: randomly choose an action.
+    "avoid_walls" policy: avoid the walls. This takes into account the agent's current
+        location (from episodic) and the memories about the map (from semantic and
+        episodic)
+
     Args:
         memory_systems: MemorySystems
         explore_policy: "random" or "avoid_walls"
@@ -108,28 +113,19 @@ def explore(
             action = random.choice(["north", "east", "south", "west", "stay"])
 
         # Get all the memories related to the current location
-        mems = []
+        mems_map = []
 
-        # from the semantic memory
-        if hasattr(memory_systems, "semantic"):
-            mems += [
-                mem
-                for mem in memory_systems.semantic
-                if mem[0] == agent_current_location
-                and mem[1] in ["north", "east", "south", "west"]
-            ]
-
-        # from the episodic
-        if hasattr(memory_systems, "episodic"):
-            mems += [
-                mem
-                for mem in memory_systems.episodic
-                if mem[0] == agent_current_location
-                and mem[1] in ["north", "east", "south", "west"]
-            ]
+        for mem in memory_systems.get_working_memory():
+            if mem[0] == agent_current_location and mem[1] in [
+                "north",
+                "east",
+                "south",
+                "west",
+            ]:
+                mems_map.append(mem)
 
         # we know the agent's current location but there is no memory about the map
-        if len(mems) == 0:
+        if len(mems_map) == 0:
             action = random.choice(["north", "east", "south", "west", "stay"])
 
         else:
@@ -139,7 +135,7 @@ def explore(
             to_take = []
             to_avoid = []
 
-            for mem in mems:
+            for mem in mems_map:
                 if mem[2].split("_")[0] == "room":
                     to_take.append(mem[1])
                 elif mem[2] == "wall":
@@ -168,7 +164,8 @@ def manage_memory(
     policy: str,
     mem_short: list | None = None,
 ) -> None:
-    """Non RL memory management policy.
+    """Non RL memory management policy. This function directly manages the long-term
+    memory
 
     Args:
         MemorySystems
@@ -181,28 +178,26 @@ def manage_memory(
     """
 
     def action_number_0():
-        assert hasattr(memory_systems, "episodic")
         mem_epi = ShortMemory.short2epi(mem_short)
-        check, error_msg = memory_systems.episodic.can_be_added(mem_epi)
+        check, error_msg = memory_systems.long.can_be_added_as_episodic(mem_epi)
         if check:
-            memory_systems.episodic.add(mem_epi)
+            memory_systems.long.add_as_episodic(mem_epi)
         else:
             if error_msg == "The memory system is full!":
-                memory_systems.episodic.forget_oldest()
-                memory_systems.episodic.add(mem_epi)
+                memory_systems.long.forget_by_selection("oldest")
+                memory_systems.long.add(mem_epi)
             else:
                 raise ValueError(error_msg)
 
     def action_number_1():
-        assert hasattr(memory_systems, "semantic")
         mem_sem = ShortMemory.short2sem(mem_short)
-        check, error_msg = memory_systems.semantic.can_be_added(mem_sem)
+        check, error_msg = memory_systems.long.can_be_added_as_semantic(mem_sem)
         if check:
-            memory_systems.semantic.add(mem_sem)
+            memory_systems.long.add(mem_sem)
         else:
             if error_msg == "The memory system is full!":
-                memory_systems.semantic.forget_weakest()
-                memory_systems.semantic.add(mem_sem)
+                memory_systems.long.forget_by_selection("weakest")
+                memory_systems.long.add(mem_sem)
             else:
                 raise ValueError(error_msg)
 
@@ -227,7 +222,6 @@ def manage_memory(
         raise ValueError
 
     memory_systems.short.forget(mem_short)
-    memory_systems.working.update()
 
 
 def answer_question(
@@ -253,34 +247,31 @@ def answer_question(
     """
 
     def get_mem_with_highest_timestamp(memories: list):
-        highest_timestamp_list = None
+        mem_with_highest_timestamp = None
         highest_timestamp = float("-inf")  # Initialize with negative infinity
 
-        for sublist in memories:
-            timestamps = sublist[3]["timestamp"]
-            max_timestamp = max(
-                timestamps
-            )  # Get the maximum timestamp in the current sublist
+        for mem in memories:
+            max_timestamp = max(mem[-1]["timestamp"])
             if max_timestamp > highest_timestamp:
                 highest_timestamp = max_timestamp
-                highest_timestamp_list = sublist
+                mem_with_highest_timestamp = mem
 
-        return highest_timestamp_list
+        return mem_with_highest_timestamp
 
     def get_mem_with_highest_strength(memories: list):
-        highest_strength_list = None
+        mem_with_highest_strength = None
         highest_strength = float("-inf")  # Initialize with negative infinity
 
-        for sublist in memories:
-            strength = sublist[3]["strength"]
+        for mem in memories:
+            strength = mem[-1]["strength"]
             if strength > highest_strength:
                 highest_strength = strength
-                highest_strength_list = sublist
+                mem_with_highest_strength = mem
 
-        return highest_strength_list
+        return mem_with_highest_strength
 
     query_idx = question.index("?")
-    memories = memory_systems.working.query_memory(question[:-1] + ["?"])
+    memories = memory_systems.query_working_memory(question[:-1] + ["?"])
 
     if len(memories) == 0:
         return None
@@ -292,12 +283,12 @@ def answer_question(
         memories_time = [
             mem[:-1] + [{"timestamp": mem[-1]["timestamp"]}]
             for mem in memories
-            if "timestamp" in list(mem[-1].keys())
+            if "timestamp" in mem
         ]
         memories_strength = [
             mem[:-1] + [{"strength": mem[-1]["strength"]}]
             for mem in memories
-            if "strength" in list(mem[-1].keys())
+            if "strength" in mem
         ]
         if len(memories_time) == 0 and len(memories_strength) == 0:
             return None
