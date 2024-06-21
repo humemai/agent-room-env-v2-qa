@@ -6,7 +6,7 @@ The trained neural network policies are not implemented yet.
 from typing import Literal
 import random
 
-from humemai.memory import ShortMemory, LongMemory, MemorySystems
+from humemai.memory import ShortMemory, MemorySystems
 
 
 def encode_observation(memory_systems: MemorySystems, obs: list[str | int]) -> None:
@@ -52,7 +52,7 @@ def find_agent_current_location(memory_systems: MemorySystems) -> str | None:
 
     """
     mems_episodic = []
-    for mem in memory_systems.get_working_memory(sort_by="timestamp"):
+    for mem in memory_systems.get_working_memory():
         if mem[0] == "agent" and mem[1] == "atlocation" and "timestamp" in mem[-1]:
             mems_episodic.append(mem)
 
@@ -79,7 +79,7 @@ def find_visited_locations(
     """
     visited_locations = []
 
-    for mem in memory_systems.get_working_memory(sort_by=sort_by):
+    for mem in memory_systems.get_working_memory():
         if mem[0] == "agent" and mem[1] == "atlocation":
             visited_locations.append(mem[2])
 
@@ -162,58 +162,64 @@ def explore(
 def manage_memory(
     memory_systems: MemorySystems,
     policy: str,
-    mem_short: list | None = None,
+    mem_short: list,
 ) -> None:
     """Non RL memory management policy. This function directly manages the long-term
-    memory
+    memory. It tries to balance the number of episodic and semantic memories. Balancing
+    is done by trying to keep the equal number of timestamps and strengths.
 
     Args:
         MemorySystems
-        policy: "episodic", "semantic", "generalize", "forget", or "random"
-        mem_short: a short-term memory to be moved into a long-term memory. If None,
-            then the first element is used.
-        mm_policy_model: a neural network model for memory management policy.
-        mm_policy_model_type: depends wheter your RL algorithm used.
+        policy: "episodic", "semantic", or "forget"
+        mem_short: a short-term memory to be moved into a long-term memory.
 
     """
-
-    def action_number_0():
-        mem_epi = ShortMemory.short2epi(mem_short)
-        check, error_msg = memory_systems.long.can_be_added_as_episodic(mem_epi)
-        if check:
-            memory_systems.long.add_as_episodic(mem_epi)
-        else:
-            if error_msg == "The memory system is full!":
-                memory_systems.long.forget_by_selection("oldest")
-                memory_systems.long.add(mem_epi)
-            else:
-                raise ValueError(error_msg)
-
-    def action_number_1():
-        mem_sem = ShortMemory.short2sem(mem_short)
-        check, error_msg = memory_systems.long.can_be_added_as_semantic(mem_sem)
-        if check:
-            memory_systems.long.add(mem_sem)
-        else:
-            if error_msg == "The memory system is full!":
-                memory_systems.long.forget_by_selection("weakest")
-                memory_systems.long.add(mem_sem)
-            else:
-                raise ValueError(error_msg)
-
-    assert memory_systems.short.has_memory(mem_short)
-    assert not memory_systems.short.is_empty
     assert policy.lower() in [
         "episodic",
         "semantic",
         "forget",
     ]
+    assert memory_systems.short.has_memory(mem_short)
+    assert not memory_systems.short.is_empty
+
+    def forget_long_when_full(memory_systems: MemorySystems):
+        num_timestamps, num_strengths = memory_systems.long.count_memories()
+
+        if num_timestamps > num_strengths:
+            memory_systems.long.forget_by_selection("oldest")
+
+        elif num_timestamps < num_strengths:
+            memory_systems.long.forget_by_selection("weakest")
+
+        else:
+            if "oldest" == random.choice(["oldest", "weakest"]):
+                memory_systems.long.forget_by_selection("oldest")
+            else:
+                memory_systems.long.forget_by_selection("weakest")
 
     if policy.lower() == "episodic":
-        action_number_0()
+        mem_epi = ShortMemory.short2epi(mem_short)
+        check, error_msg = memory_systems.long.can_be_added(mem_epi)
+        if check:
+            memory_systems.long.add(mem_epi)
+        else:
+            if error_msg == "The memory system is full!":
+                forget_long_when_full(memory_systems)
+                memory_systems.long.add(mem_epi)
+            else:
+                raise ValueError(error_msg)
 
     elif policy.lower() == "semantic":
-        action_number_1()
+        mem_sem = ShortMemory.short2sem(mem_short)
+        check, error_msg = memory_systems.long.can_be_added(mem_sem)
+        if check:
+            memory_systems.long.add(mem_sem)
+        else:
+            if error_msg == "The memory system is full!":
+                forget_long_when_full(memory_systems)
+                memory_systems.long.add(mem_sem)
+            else:
+                raise ValueError(error_msg)
 
     elif policy.lower() == "forget":
         pass
@@ -221,7 +227,7 @@ def manage_memory(
     else:
         raise ValueError
 
-    memory_systems.short.forget(mem_short)
+    memory_systems.short.forget(mem_short)  # don't forget to forget the short memory!
 
 
 def answer_question(
@@ -245,75 +251,38 @@ def answer_question(
         pred: prediction
 
     """
-
-    def get_mem_with_highest_timestamp(memories: list):
-        mem_with_highest_timestamp = None
-        highest_timestamp = float("-inf")  # Initialize with negative infinity
-
-        for mem in memories:
-            max_timestamp = max(mem[-1]["timestamp"])
-            if max_timestamp > highest_timestamp:
-                highest_timestamp = max_timestamp
-                mem_with_highest_timestamp = mem
-
-        return mem_with_highest_timestamp
-
-    def get_mem_with_highest_strength(memories: list):
-        mem_with_highest_strength = None
-        highest_strength = float("-inf")  # Initialize with negative infinity
-
-        for mem in memories:
-            strength = mem[-1]["strength"]
-            if strength > highest_strength:
-                highest_strength = strength
-                mem_with_highest_strength = mem
-
-        return mem_with_highest_strength
-
     query_idx = question.index("?")
-    memories = memory_systems.query_working_memory(question[:-1] + ["?"])
+    working = memory_systems.get_working_memory()
+    memory_object = working.query(question[:-1] + ["?"])
 
-    if len(memories) == 0:
+    if len(memory_object) == 0:
         return None
 
+    mem_latest = memory_object.retrieve_memory_by_qualifier(
+        "timestamp", "list", "max", "max"
+    )
+    mem_strongest = memory_object.retrieve_memory_by_qualifier("strength", "int", "max")
+
     if policy.lower() == "random":
-        return random.choice(memories)[query_idx]
+        return memory_object.retrieve_random_memory()[query_idx]
 
     elif policy.lower() == "latest_strongest":
-        memories_time = [
-            mem[:-1] + [{"timestamp": mem[-1]["timestamp"]}]
-            for mem in memories
-            if "timestamp" in mem
-        ]
-        memories_strength = [
-            mem[:-1] + [{"strength": mem[-1]["strength"]}]
-            for mem in memories
-            if "strength" in mem
-        ]
-        if len(memories_time) == 0 and len(memories_strength) == 0:
-            return None
-        elif len(memories_time) == 0:
-            return get_mem_with_highest_strength(memories_strength)[query_idx]
+
+        if mem_latest is not None:
+            return mem_latest[query_idx]
+        elif mem_strongest is not None:
+            return mem_strongest[query_idx]
         else:
-            return get_mem_with_highest_timestamp(memories_time)[query_idx]
+            return None
 
     elif policy.lower() == "strongest_latest":
-        memories_time = [
-            mem[:-1] + [{"timestamp": mem[-1]["timestamp"]}]
-            for mem in memories
-            if "timestamp" in list(mem[-1].keys())
-        ]
-        memories_strength = [
-            mem[:-1] + [{"strength": mem[-1]["strength"]}]
-            for mem in memories
-            if "strength" in list(mem[-1].keys())
-        ]
-        if len(memories_time) == 0 and len(memories_strength) == 0:
-            return None
-        elif len(memories_strength) == 0:
-            return get_mem_with_highest_timestamp(memories_time)[query_idx]
+
+        if mem_strongest is not None:
+            return mem_strongest[query_idx]
+        elif mem_latest is not None:
+            return mem_latest[query_idx]
         else:
-            return get_mem_with_highest_strength(memories_strength)[query_idx]
+            return None
 
     else:
         raise ValueError("Unknown policy.")

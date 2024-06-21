@@ -251,7 +251,7 @@ class DQNAgent:
                 semantic_knowledge=room_layout
             )
 
-    def get_deepcopied_working_memory(self) -> list[list]:
+    def get_deepcopied_working_memory_list(self) -> list[list]:
         """Get a deepcopied memory state.
 
         This is necessary because the memory state is a list of lists, which is
@@ -261,7 +261,7 @@ class DQNAgent:
             deepcopied working memory
 
         """
-        return deepcopy(self.memory_systems.get_working_memory())
+        return deepcopy(self.memory_systems.get_working_memory().to_list())
 
     def save_agent_as_episodic_memory(self) -> None:
         """Move the agent's location related short-term memories to the long-term
@@ -303,7 +303,7 @@ class DQNAgent:
         self.save_agent_as_episodic_memory()
 
         # mm
-        s_mm = self.get_deepcopied_working_memory()
+        s_mm = self.get_deepcopied_working_memory_list()
         a_mm, q_mm = select_action(  # the dimension of a_mm is [num_actions_taken]
             state=s_mm,
             greedy=greedy,
@@ -358,7 +358,7 @@ class DQNAgent:
         assert self.tuple_mm[2:] == [None, None, None]
 
         # explore
-        s_explore = self.get_deepcopied_working_memory()
+        s_explore = self.get_deepcopied_working_memory_list()
 
         a_explore, q_explore = select_action(
             state=s_explore,
@@ -394,7 +394,7 @@ class DQNAgent:
         self.save_agent_as_episodic_memory()
 
         # mm
-        s_next_mm = self.get_deepcopied_working_memory()
+        s_next_mm = self.get_deepcopied_working_memory_list()
 
         self.tuple_mm[2] = reward
         self.tuple_mm[3] = s_next_mm
@@ -442,7 +442,7 @@ class DQNAgent:
         """
         assert self.tuple_explore[3:] == [None, None]
 
-        s_mm = self.get_deepcopied_working_memory()
+        s_mm = self.get_deepcopied_working_memory_list()
 
         # mm
         a_mm, q_mm = select_action(
@@ -459,7 +459,7 @@ class DQNAgent:
             manage_memory(self.memory_systems, self.action_mm2str[a_mm_], mem_short)
 
         # explore
-        s_next_explore = self.get_deepcopied_working_memory()
+        s_next_explore = self.get_deepcopied_working_memory_list()
 
         self.tuple_mm = [s_mm, a_mm, None, None, None]
         self.tuple_explore[3] = s_next_explore
