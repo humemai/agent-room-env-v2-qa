@@ -36,8 +36,8 @@ class DQNAgent:
 
     This is an upgrade from https://github.com/humemai/agent-room-env-v2-lstm. The two
     policies, i.e., memory management and exploration, are learned by a GNN at once!
-    The question-policy is still hand-crafted. Potentially, this can be learned by a
-    contextual bandit algorithm.
+    The question-answering function is still hand-crafted. Potentially, this can be
+    learned by a contextual bandit algorithm.
 
     Based on https://github.com/Curt-Park/rainbow-is-all-you-need/
     """
@@ -53,25 +53,25 @@ class DQNAgent:
         epsilon_decay_until: float = 10000,
         max_epsilon: float = 1.0,
         min_epsilon: float = 0.1,
-        gamma: float = 0.9,
+        gamma: dict[str, float] = {"mm": 0.99, "explore": 0.9},
         capacity: dict = {
-            "long": 16,
+            "long": 12,
             "short": 10,
         },
         pretrain_semantic: str | bool = False,
+        semantic_decay_factor: float = 1.0,
         gnn_params: dict = {
-            "embedding_dim": 128,
-            "num_layers_GNN": 8,
-            "num_layers_MLP": 8,
+            "embedding_dim": 64,
+            "num_layers": 2,
         },
-        run_test: bool = True,
-        num_samples_for_results: int = 10,
-        plotting_interval: int = 10,
+        mlp_params: dict = {"hidden_size": 64},
+        num_samples_for_results: dict = {"val": 10, "test": 10},
+        plotting_interval: int = 20,
         train_seed: int = 5,
         test_seed: int = 0,
         device: str = "cpu",
         mm_policy: str = "generalize",
-        qa_policy: str = "latest_strongest",
+        qa_function: str = "latest_strongest",
         explore_policy: str = "avoid_walls",
         env_config: dict = {
             "question_prob": 1.0,
@@ -102,6 +102,7 @@ class DQNAgent:
             gamma: discount factor
             capacity: The capacity of each human-like memory systems
             pretrain_semantic: whether to pretrain the semantic memory system.
+            semantic_decay_factor: decay factor for the semantic memory system
             gnn_params: parameters for the neural network (GNN)
             run_test: whether to run test
             num_samples_for_results: The number of samples to validate / test the agent.
@@ -111,8 +112,8 @@ class DQNAgent:
             device: This is either "cpu" or "cuda".
             mm_policy: memory management policy. Choose one of "generalize", "random",
                 "rl", or "neural"
-            qa_policy: question answering policy Choose one of "episodic_semantic",
-                "random", or "neural". qa_policy shouldn't be trained with RL. There is
+            qa_function: question answering policy Choose one of "episodic_semantic",
+                "random", or "neural". qa_function shouldn't be trained with RL. There is
                 no sequence of states / actions to learn from.
             explore_policy: The room exploration policy. Choose one of "random",
                 "avoid_walls", "rl", or "neural"
@@ -149,8 +150,8 @@ class DQNAgent:
             "rl",
             "neural",
         ]
-        self.qa_policy = qa_policy
-        assert self.qa_policy in ["random", "latest_strongest", "strongest_latest"]
+        self.qa_function = qa_function
+        assert self.qa_function in ["random", "latest_strongest", "strongest_latest"]
         self.explore_policy = explore_policy
         assert self.explore_policy in [
             "random",
@@ -162,6 +163,7 @@ class DQNAgent:
         self.num_samples_for_results = num_samples_for_results
         self.capacity = capacity
         self.pretrain_semantic = pretrain_semantic
+        self.semantic_decay_factor = semantic_decay_factor
         self.env = gym.make(self.env_str, **self.env_config)
 
         self.device = torch.device(device)
@@ -172,7 +174,6 @@ class DQNAgent:
         self.is_notebook = is_running_notebook()
         self.num_iterations = num_iterations
         self.plotting_interval = plotting_interval
-        self.run_test = run_test
 
         self.replay_buffer_size = replay_buffer_size
         self.batch_size = batch_size
@@ -314,6 +315,7 @@ class DQNAgent:
         assert len(a_mm) == len(self.memory_systems.short)
         for a_mm_, mem_short in zip(a_mm, self.memory_systems.short):
             manage_memory(self.memory_systems, self.action_mm2str[a_mm_], mem_short)
+        self.memory_systems.semantic.decay()
 
         self.tuple_mm = [s_mm, a_mm, None, None, None]
 
@@ -372,7 +374,7 @@ class DQNAgent:
         a_qa = [
             answer_question(
                 self.memory_systems,
-                self.qa_policy,
+                self.qa_function,
                 question,
             )
             for question in self.questions
@@ -457,6 +459,7 @@ class DQNAgent:
         assert len(a_mm) == len(self.memory_systems.short)
         for a_mm_, mem_short in zip(a_mm, self.memory_systems.short):
             manage_memory(self.memory_systems, self.action_mm2str[a_mm_], mem_short)
+        self.memory_systems.semantic.decay()
 
         # explore
         s_next_explore = self.get_deepcopied_working_memory_list()
@@ -618,10 +621,10 @@ class DQNAgent:
         q_values_local = []
         actions_local = []
 
-        for idx in range(self.num_samples_for_results):
+        for idx in range(self.num_samples_for_results[val_or_test]):
             new_episode_starts = True
             score = 0
-            if idx == self.num_samples_for_results - 1:
+            if idx == self.num_samples_for_results[val_or_test] - 1:
                 save_useful = True
             else:
                 save_useful = False
@@ -694,7 +697,7 @@ class DQNAgent:
             states, q_values, actions, self.default_root_dir, "val", self.num_validation
         )
         self.env.close()
-        self.num_validation += 1
+        self.num_validation += self.validation_interval
         self.dqn.train()
 
     def test(self, checkpoint: str = None) -> None:

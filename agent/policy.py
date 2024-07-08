@@ -243,7 +243,7 @@ def answer_question(
 
     Args:
         MemorySystems
-        qa_policy: "random", "latest_strongest", or "strongest_latest".
+        qa_function: "random", "latest_strongest", or "strongest_latest".
         question: A quadruple given by RoomEnv-v2, e.g., [laptop, atlocation, ?,
             current_time]
 
