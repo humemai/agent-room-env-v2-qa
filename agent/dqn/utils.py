@@ -3,6 +3,7 @@
 import os
 from typing import Literal
 import random
+import shutil
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -13,13 +14,14 @@ from humemai.utils import (
     is_running_notebook,
     write_pickle,
     write_yaml,
+    list_duplicates_of,
 )
 from IPython.display import clear_output
 from tqdm.auto import tqdm
 
 
 class ReplayBuffer:
-    """A simple numpy replay buffer.
+    r"""A simple numpy replay buffer.
 
     numpy replay buffer is faster than deque or list.
     copied from https://github.com/Curt-Park/rainbow-is-all-you-need
@@ -132,7 +134,7 @@ class ReplayBuffer:
         next_obs: np.ndarray,
         done: bool,
     ) -> None:
-        """Store the data in the buffer.
+        r"""Store the data in the buffer.
 
         Args:
             obs: observation
@@ -151,11 +153,11 @@ class ReplayBuffer:
         self.size = min(self.size + 1, self.max_size)
 
     def sample_indices(self) -> np.ndarray:
-        """Sample indices from the buffer."""
+        r"""Sample indices from the buffer."""
         return np.random.choice(self.size, size=self.batch_size, replace=False)
 
     def sample_batch(self, idxs: np.ndarray | None = None) -> dict[str, np.ndarray]:
-        """Sample a batch of data from the buffer.
+        r"""Sample a batch of data from the buffer.
 
         Args:
             idxs: indices to sample from the buffer. If None, idxs will be
@@ -185,10 +187,10 @@ class ReplayBuffer:
 
 
 class MultiAgentReplayBuffer:
-    """A simple numpy replay buffer for multi-agent."""
+    r"""A simple numpy replay buffer for multi-agent."""
 
     def __init__(self, replay_buffer_1: ReplayBuffer, replay_buffer_2: ReplayBuffer):
-        """Initialize replay buffer.
+        r"""Initialize replay buffer.
 
         Attributes:
             replay_buffer_1 (ReplayBuffer): replay buffer for memory management
@@ -209,7 +211,7 @@ class MultiAgentReplayBuffer:
         ), "The replay buffers must have the same batch size."
 
     def sample_batch(self, sample_same_index: bool) -> tuple[dict, dict]:
-        """Sample a batch of data from the buffer.
+        r"""Sample a batch of data from the buffer.
 
         Ars:
             sample_same_index: whether to sample the same index for both replay buffers.
@@ -254,7 +256,7 @@ def plot_results(
     to_plot: str = "all",
     save_fig: bool = False,
 ) -> None:
-    """Plot things for DQN training.
+    r"""Plot things for DQN training.
 
     Args:
         scores: a dictionary of scores for train, validation, and test.
@@ -453,7 +455,7 @@ def console(
     total_maximum_episode_rewards: int,
     **kwargs,
 ) -> None:
-    """Print the dqn training to the console."""
+    r"""Print the dqn training to the console."""
     if scores["train"]:
         tqdm.write(
             f"iteration {iteration_idx} out of {num_iterations}.\n"
@@ -484,8 +486,9 @@ def save_final_results(
     default_root_dir: str,
     q_values: dict[str, dict[str, list[float]]],
     self: object,
+    save_the_agent: bool = False,
 ) -> None:
-    """Save dqn train / val / test results.
+    r"""Save dqn train / val / test results.
 
     Args:
         scores: a dictionary of scores for train, validation, and test.
@@ -494,6 +497,7 @@ def save_final_results(
         default_root_dir: the root directory where the results are saved.
         q_values: a dictionary of q_values for train, validation, and test.
         self: the agent object.
+        save_the_agent: whether to save the agent or not.
 
     """
     results = {
@@ -513,21 +517,48 @@ def save_final_results(
     }
     write_yaml(results, os.path.join(default_root_dir, "results.yaml"))
     write_yaml(q_values, os.path.join(default_root_dir, "q_values.yaml"))
-    write_pickle(self, os.path.join(default_root_dir, "agent.pkl"))
+    if save_the_agent:
+        write_pickle(self, os.path.join(default_root_dir, "agent.pkl"))
 
 
 def find_non_masked_rows(mask: torch.Tensor) -> list[torch.Tensor]:
-    """
-    Identifies which rows are completely masked (all zeros) in each batch.
+    r"""
+    Identifies rows that are not completely masked in each batch of a 3D tensor.
+
+    This function considers a row as non-masked if it contains at least one non-zero
+    element. It processes each batch independently and returns the indices of non-masked
+    rows for each batch.
 
     Args:
-        mask: A tensor of shape [batch_size, num_items, num_features]
-                             containing binary values (0s and 1s).
+        mask (torch.Tensor): A 3D tensor of shape [batch_size, num_items, num_features],
+            containing binary values (0s and 1s).
+            - batch_size: number of batches
+            - num_items: number of items (rows) in each batch
+            - num_features: number of features for each item
 
     Returns:
-        masked_indices: A list where each element is a tensor containing the indices of
-            fully masked rows for each batch.
+        list[torch.Tensor]: A list of 1D tensors, where each tensor contains the indices
+        of non-masked rows for the corresponding batch. The length of the list is equal
+        to the batch_size. Each tensor in the list has shape [num_non_masked_rows] and
+        dtype torch.long.
 
+    Example:
+        >>> mask = torch.tensor([
+        ...     [[1, 0, 1], [0, 0, 0], [0, 1, 0]],
+        ...     [[0, 0, 0], [1, 1, 1], [0, 1, 0]]
+        ... ])
+        >>> result = find_non_masked_rows(mask)
+        >>> print(result)
+        [tensor([0, 2]), tensor([1, 2])]
+
+    Note:
+        - A row is considered non-masked if it contains at least one non-zero element.
+        - If a batch has all rows masked, the corresponding tensor in the output list
+          will be empty.
+        - This function does not modify the input tensor.
+
+    Raises:
+        ValueError: If the input tensor is not 3-dimensional.
     """
     # Assuming mask values are 0 for masked and 1 for unmasked
     # Sum across the last dimension (features), we want rows where the sum is 0
@@ -553,7 +584,7 @@ def compute_loss_mm(
     ddqn: str,
     gamma: float,
 ) -> torch.Tensor:
-    """Return the DQN td loss for the memory management policy.
+    r"""Return the DQN td loss for the memory management policy.
 
     G_t   = r + gamma * v(s_{t+1})  if state != Terminal
           = r                       otherwise
@@ -635,7 +666,7 @@ def compute_loss_explore(
     ddqn: str,
     gamma: float,
 ) -> torch.Tensor:
-    """Return the DQN td loss for explore policy.
+    r"""Return the DQN td loss for explore policy.
 
     G_t   = r + gamma * v(s_{t+1})  if state != Terminal
           = r                       otherwise
@@ -697,13 +728,13 @@ def update_model(
     replay_buffer_explore: ReplayBuffer,
     optimizer: torch.optim.Adam,
     device: str,
-    dqn: dict[str, torch.nn.Module],
-    dqn_target: dict[str, torch.nn.Module],
+    dqn: torch.nn.Module,
+    dqn_target: torch.nn.Module,
     ddqn: str,
     gamma: float,
     loss_weights: dict[str, int] = {"mm": 0.5, "explore": 0.5},
 ) -> tuple[float, float, float]:
-    """Update the model by gradient descent.
+    r"""Update the model by gradient descent.
 
     Args:
         replay_buffer_mm: replay buffer for memory management
@@ -729,7 +760,12 @@ def update_model(
 
     loss_mm = compute_loss_mm(batch_mm, device, dqn, dqn_target, ddqn, gamma)
     loss_explore = compute_loss_explore(
-        batch_explore, device, dqn, dqn_target, ddqn, gamma
+        batch_explore,
+        device,
+        dqn,
+        dqn_target,
+        ddqn,
+        gamma,
     )
 
     loss = loss_weights["mm"] * loss_mm + loss_weights["explore"] * loss_explore
@@ -750,9 +786,9 @@ def select_action(
     greedy: bool,
     dqn: torch.nn.Module,
     epsilon: float,
-    policy_type: Literal["mm", "explore", "qa"],
+    policy_type: Literal["mm", "explore"],
 ) -> tuple[list[int], list[list[float]]]:
-    """Select action(s) from the input state, with epsilon-greedy policy.
+    r"""Select action(s) from the input state, with epsilon-greedy policy.
 
     Args:
         state: The current state of the memory systems. This is NOT what the gym env
@@ -761,7 +797,7 @@ def select_action(
         greedy: always pick greedy action if True
         dqn: dqn model
         epsilon: epsilon
-        policy_type: mm, explore, or qa
+        policy_type: "mm" or "explore"
 
     Returns:
         selected_actions: dimension is [num_actions_taken]
@@ -788,39 +824,48 @@ def save_validation(
     scores_temp: list,
     scores: dict,
     default_root_dir: str,
-    num_validation: int,
-    val_filenames: dict[str, str],
-    dqn=torch.nn.Module,
+    num_episodes: int,
+    validation_interval: int,
+    val_file_names: list,
+    dqn: torch.nn.Module,
 ) -> None:
-    """Keep the best validation model.
+    r"""Keep the best validation model.
 
     Args:
+        policy: "mm", "explore", or None.
         scores_temp: a list of validation scores for the current validation episode.
         scores: a dictionary of scores for train, validation, and test.
         default_root_dir: the root directory where the results are saved.
-        num_validation: the current validation episode.
-        val_filenames: looks like `{"best": None, "last": None}`
-        dqn: gnn, mm, and explore
+        num_episodes: number of episodes run so far
+        validation_interval: the interval to validate the model.
+        val_file_names: a list of dirnames for the validation models.
+        dqn: the dqn model.
 
     """
-    scores["val"].append(scores_temp)
-    last_score = round(np.mean(scores_temp).item())
+    mean_score = round(np.mean(scores_temp).item())
+
     filename = os.path.join(
-        default_root_dir, f"episode={num_validation}_val-score={last_score}.pt"
+        default_root_dir, f"episode={num_episodes}_val-score={mean_score}.pt"
     )
-    val_filenames["last"] = filename
+    torch.save(dqn.state_dict(), filename)
 
-    if val_filenames["best"] is None:
-        val_filenames["best"] = filename
-        torch.save(dqn.state_dict(), filename)
+    val_file_names.append(filename)
 
-    else:
-        best_score = int(val_filenames["best"].split("val-score=")[-1].split(".pt")[0])
+    for _ in range(validation_interval):
+        scores["val"].append(scores_temp)
 
-        if last_score > best_score:
-            os.remove(val_filenames["best"])
-            val_filenames["best"] = filename
-            torch.save(dqn.state_dict(), filename)
+    scores_to_compare = []
+    for fn in val_file_names:
+        score = int(fn.split("val-score=")[-1].split(".pt")[0])
+        scores_to_compare.append(score)
+
+    indexes = list_duplicates_of(scores_to_compare, max(scores_to_compare))
+    file_to_keep = val_file_names[indexes[-1]]
+
+    for fn in val_file_names:
+        if fn != file_to_keep:
+            os.remove(fn)
+            val_file_names.remove(fn)
 
 
 def save_states_q_values_actions(
@@ -829,9 +874,9 @@ def save_states_q_values_actions(
     actions: list,
     default_root_dir: str,
     val_or_test: str,
-    num_validation: int | None = None,
+    num_episodes: int | None = None,
 ) -> None:
-    """Save states, q_values, and actions.
+    r"""Save states, q_values, and actions.
 
     Args:
         states: a list of states.
@@ -839,16 +884,16 @@ def save_states_q_values_actions(
         actions: a list of actions.
         default_root_dir: the root directory where the results are saved.
         val_or_test: "val" or "test"
-        num_validation: the current validation episode.
+        num_episodes: the current validation episode.
 
     """
-    if val_or_test.lower() == "val":
-        filename = os.path.join(
-            default_root_dir,
-            f"states_q_value_actions_val_episode={num_validation}.yaml",
-        )
-    else:
-        filename = os.path.join(default_root_dir, "states_q_value_actions_test.yaml")
+    filename_template = (
+        f"states_q_values_actions_val_episode={num_episodes}.yaml"
+        if val_or_test.lower() == "val"
+        else "states_q_values_actions_test.yaml"
+    )
+
+    filename = os.path.join(default_root_dir, filename_template)
 
     assert len(states) == len(q_values) == len(actions)
     to_save = [
@@ -858,8 +903,11 @@ def save_states_q_values_actions(
     write_yaml(to_save, filename)
 
 
-def target_hard_update(dqn: torch.nn.Module, dqn_target: torch.nn.Module) -> None:
-    """Hard update: target <- local.
+def target_hard_update(
+    dqn: torch.nn.Module,
+    dqn_target: torch.nn.Module,
+) -> None:
+    r"""Hard update: update target with local.
 
     Args:
         dqn: dqn model
@@ -871,7 +919,7 @@ def target_hard_update(dqn: torch.nn.Module, dqn_target: torch.nn.Module) -> Non
 def update_epsilon(
     epsilon: float, max_epsilon: float, min_epsilon: float, epsilon_decay_until: int
 ) -> float:
-    """Linearly decrease epsilon
+    r"""Linearly decrease epsilon
 
     Args:
         epsilon: current epsilon

@@ -32,7 +32,7 @@ from ..policy import (
 
 
 class DQNAgent:
-    """DQN Agent interacting with environment.
+    r"""DQN Agent interacting with environment.
 
     This is an upgrade from https://github.com/humemai/agent-room-env-v2-lstm. The two
     policies, i.e., memory management and exploration, are learned by a GNN at once!
@@ -47,32 +47,34 @@ class DQNAgent:
         env_str: str = "room_env:RoomEnv-v2",
         num_iterations: int = 10000,
         replay_buffer_size: int = 10000,
+        validation_starts_at: int = 5000,
         warm_start: int = 1000,
         batch_size: int = 32,
         target_update_interval: int = 10,
         epsilon_decay_until: float = 10000,
         max_epsilon: float = 1.0,
         min_epsilon: float = 0.1,
-        gamma: dict[str, float] = {"mm": 0.99, "explore": 0.9},
+        gamma: float = 0.9,
         capacity: dict = {
             "long": 12,
-            "short": 10,
+            "short": 15,
         },
-        pretrain_semantic: str | bool = False,
+        pretrain_semantic: Literal[False, "include_walls", "exclude_walls"] = False,
         semantic_decay_factor: float = 1.0,
-        gnn_params: dict = {
-            "embedding_dim": 64,
-            "num_layers": 2,
+        save_agent_as_episodic: bool = True,
+        dqn_params: dict = {
+            "embedding_dim": 8,
+            "num_layers_GNN": 2,
+            "num_hidden_layers_MLP": 1,
+            "dueling_dqn": True,
         },
-        mlp_params: dict = {"hidden_size": 64},
-        num_samples_for_results: dict = {"val": 10, "test": 10},
+        num_samples_for_results: dict = {"val": 5, "test": 10},
+        validation_interval: int = 5,
         plotting_interval: int = 20,
         train_seed: int = 5,
         test_seed: int = 0,
-        device: str = "cpu",
-        mm_policy: str = "generalize",
+        device: Literal["cpu", "cuda"] = "cpu",
         qa_function: str = "latest_strongest",
-        explore_policy: str = "avoid_walls",
         env_config: dict = {
             "question_prob": 1.0,
             "terminates_at": 99,
@@ -85,14 +87,15 @@ class DQNAgent:
             "include_walls_in_observations": True,
         },
         ddqn: bool = True,
-        default_root_dir: str = "./training-results/stochastic-objects/DQN/",
+        default_root_dir: str = "./training-results/",
     ) -> None:
-        """Initialization.
+        r"""Initialization.
 
         Args:
             env_str: environment string. This has to be "room_env:RoomEnv-v2"
             num_iterations: number of iterations to train
             replay_buffer_size: size of replay buffer
+            validation_starts_at: when to start validation
             warm_start: number of steps to fill the replay buffer, before training
             batch_size: This is the amount of samples sampled from the replay buffer.
             target_update_interval: interval to update target network
@@ -103,20 +106,17 @@ class DQNAgent:
             capacity: The capacity of each human-like memory systems
             pretrain_semantic: whether to pretrain the semantic memory system.
             semantic_decay_factor: decay factor for the semantic memory system
-            gnn_params: parameters for the neural network (GNN)
-            run_test: whether to run test
+            save_agent_as_episodic: whether to save the agent's memory
+            dqn_params: parameters for the DQN
             num_samples_for_results: The number of samples to validate / test the agent.
+            validation_interval: interval to validate
             plotting_interval: interval to plot results
             train_seed: seed for training
             test_seed: seed for testing
             device: This is either "cpu" or "cuda".
-            mm_policy: memory management policy. Choose one of "generalize", "random",
-                "rl", or "neural"
             qa_function: question answering policy Choose one of "episodic_semantic",
                 "random", or "neural". qa_function shouldn't be trained with RL. There is
                 no sequence of states / actions to learn from.
-            explore_policy: The room exploration policy. Choose one of "random",
-                "avoid_walls", "rl", or "neural"
             env_config: The configuration of the environment.
                 question_prob: The probability of a question being asked at every
                     observation.
@@ -141,41 +141,27 @@ class DQNAgent:
 
         self.env_str = env_str
         self.env_config = env_config
-        self.mm_policy = mm_policy
-        assert self.mm_policy in [
-            "random",
-            "episodic",
-            "semantic",
-            "generalize",
-            "rl",
-            "neural",
-        ]
         self.qa_function = qa_function
         assert self.qa_function in ["random", "latest_strongest", "strongest_latest"]
-        self.explore_policy = explore_policy
-        assert self.explore_policy in [
-            "random",
-            "avoid_walls",
-            "new_room",
-            "rl",
-            "neural",
-        ]
         self.num_samples_for_results = num_samples_for_results
+        self.validation_interval = validation_interval
         self.capacity = capacity
         self.pretrain_semantic = pretrain_semantic
         self.semantic_decay_factor = semantic_decay_factor
+        self.save_agent_as_episodic = save_agent_as_episodic
         self.env = gym.make(self.env_str, **self.env_config)
 
         self.device = torch.device(device)
         print(f"Running on {self.device}")
 
         self.ddqn = ddqn
-        self.val_filenames = {"best": None, "last": None}
+        self.val_file_names = []
         self.is_notebook = is_running_notebook()
         self.num_iterations = num_iterations
         self.plotting_interval = plotting_interval
 
         self.replay_buffer_size = replay_buffer_size
+        self.validation_starts_at = validation_starts_at
         self.batch_size = batch_size
         self.epsilon = max_epsilon
         self.max_epsilon = max_epsilon
@@ -197,63 +183,103 @@ class DQNAgent:
 
         self.init_memory_systems()
 
-        self.gnn_params = gnn_params
-        self.gnn_params["device"] = self.device
-        self.gnn_params["entities"] = [
+        self.dqn_params = dqn_params
+        self.dqn_params["device"] = self.device
+        self.dqn_params["entities"] = [
             e for entities in self.env.unwrapped.entities.values() for e in entities
         ]
-        self.gnn_params["relations"] = (
+        self.dqn_params["relations"] = (
             self.env.unwrapped.relations + self.memory_systems.qualifier_relations
         )
-        self.dqn = GNN(**self.gnn_params)
-        self.dqn_target = GNN(**self.gnn_params)
+        self.dqn = GNN(**self.dqn_params)
+        self.dqn_target = GNN(**self.dqn_params)
         self.dqn_target.load_state_dict(self.dqn.state_dict())
         self.dqn_target.eval()
 
         self.replay_buffer_mm = ReplayBuffer(self.replay_buffer_size, self.batch_size)
-        self.replay_buffer_explore = ReplayBuffer(replay_buffer_size, batch_size)
+        self.replay_buffer_explore = ReplayBuffer(
+            self.replay_buffer_size, self.batch_size
+        )
 
         # optimizer
-        self.optimizer = optim.Adam(self.dqn.parameters())
+        self.optimizer = optim.Adam(list(self.dqn.parameters()))
 
         self.q_values = {
             "train": {"mm": [], "explore": []},
             "val": {"mm": [], "explore": []},
             "test": {"mm": [], "explore": []},
         }
+        self._save_number_of_parameters()
 
     def _create_directory(self, params_to_save: dict) -> None:
-        """Create the directory to store the results."""
+        r"""Create the directory to store the results."""
         os.makedirs(self.default_root_dir, exist_ok=True)
         write_yaml(params_to_save, os.path.join(self.default_root_dir, "train.yaml"))
 
+    def _save_number_of_parameters(self) -> None:
+        r"""Save the number of parameters in the model."""
+        write_yaml(
+            {
+                "total": sum(p.numel() for p in self.dqn.parameters()),
+                "gnn": sum(p.numel() for p in self.dqn.gnn.parameters()),
+                "mlp_mm": sum(p.numel() for p in self.dqn.mlp_mm.parameters()),
+                "mlp_explore": sum(
+                    p.numel() for p in self.dqn.mlp_explore.parameters()
+                ),
+                "entity_embeddings": sum(
+                    p.numel() for p in self.dqn.entity_embeddings.parameters()
+                ),
+                "relation_embeddings": sum(
+                    p.numel() for p in self.dqn.relation_embeddings.parameters()
+                ),
+            },
+            os.path.join(self.default_root_dir, "num_params.yaml"),
+        )
+
     def remove_results_from_disk(self) -> None:
-        """Remove the results from the disk."""
+        r"""Remove the results from the disk."""
         shutil.rmtree(self.default_root_dir)
 
-    def init_memory_systems(self) -> None:
-        """Initialize the agent's memory systems. This has nothing to do with the
-        replay buffer."""
+    def init_memory_systems(self, reset_semantic_decay: bool = True) -> None:
+        r"""Initialize the agent's memory systems. This has nothing to do with the
+        replay buffer.
+
+        Args:
+            reset_semantic_decay: whether to reset the semantic memory system's decay
+
+        """
         self.memory_systems = MemorySystems(
             short=ShortMemory(capacity=self.capacity["short"]),
-            long=LongMemory(capacity=self.capacity["long"]),
+            long=LongMemory(
+                capacity=self.capacity["long"],
+                semantic_decay_factor=self.semantic_decay_factor,
+                min_strength=1,
+            ),
         )
 
         assert self.pretrain_semantic in [False, "exclude_walls", "include_walls"]
         if self.pretrain_semantic in ["exclude_walls", "include_walls"]:
+
             if self.pretrain_semantic == "exclude_walls":
                 exclude_walls = True
             else:
                 exclude_walls = False
             room_layout = self.env.unwrapped.return_room_layout(exclude_walls)
 
-            assert self.capacity["semantic"] > 0
-            self.memory_systems.semantic.pretrain_semantic(
-                semantic_knowledge=room_layout
-            )
+            self.memory_systems.long.pretrain_semantic(semantic_knowledge=room_layout)
+
+            if self.pretrain_semantic == "include_walls":
+                assert self.memory_systems.long.size > 0
+            elif "xxs" in self.env_config["room_size"]:
+                assert self.memory_systems.long.size == 0
+            else:
+                assert self.memory_systems.long.size > 0
+
+        if reset_semantic_decay:
+            self.num_semantic_decayed = 0
 
     def get_deepcopied_working_memory_list(self) -> list[list]:
-        """Get a deepcopied memory state.
+        r"""Get a deepcopied memory state.
 
         This is necessary because the memory state is a list of lists, which is
         mutable.
@@ -265,13 +291,19 @@ class DQNAgent:
         return deepcopy(self.memory_systems.get_working_memory().to_list())
 
     def save_agent_as_episodic_memory(self) -> None:
-        """Move the agent's location related short-term memories to the long-term
+        r"""Move the agent's location related short-term memories to the long-term
         memory system as episodic memories.
 
         """
+        num_moved = 0
+        num_shorts_before = self.memory_systems.short.size
         for mem_short in self.memory_systems.short:
             if mem_short[0] == "agent":
                 manage_memory(self.memory_systems, "episodic", mem_short)
+                num_moved += 1
+        num_shorts_after = self.memory_systems.short.size
+
+        assert (num_shorts_before - num_shorts_after) == num_moved
 
     def step_a(
         self,
@@ -279,7 +311,7 @@ class DQNAgent:
         save_q_mm: bool,
         train_val_test: Literal["train", "val", "test"] | None = None,
     ) -> None:
-        """Step a of the algorithm.
+        r"""Step a of the algorithm.
 
         $\pi_{mm}$:
             IN:  [    ,     ,     ,     ,     ]    OUT: [s   , a   ,     ,     ,     ]
@@ -301,7 +333,8 @@ class DQNAgent:
         self.observations = observations["room"]
         self.questions = observations["questions"]
         encode_all_observations(self.memory_systems, self.observations)
-        self.save_agent_as_episodic_memory()
+        if self.save_agent_as_episodic:
+            self.save_agent_as_episodic_memory()
 
         # mm
         s_mm = self.get_deepcopied_working_memory_list()
@@ -315,7 +348,6 @@ class DQNAgent:
         assert len(a_mm) == len(self.memory_systems.short)
         for a_mm_, mem_short in zip(a_mm, self.memory_systems.short):
             manage_memory(self.memory_systems, self.action_mm2str[a_mm_], mem_short)
-        self.memory_systems.semantic.decay()
 
         self.tuple_mm = [s_mm, a_mm, None, None, None]
 
@@ -332,7 +364,7 @@ class DQNAgent:
         save_q_explore: bool,
         train_val_test: Literal["train", "val", "test"] | None = None,
     ) -> tuple[float, bool]:
-        """Step b of the algorithm.
+        r"""Step b of the algorithm.
 
         $\pi_{mm}$:
             IN:  [s   , a   ,     ,     ,     ]    OUT: [s   , a   , r   , s'  , done]
@@ -370,8 +402,8 @@ class DQNAgent:
             policy_type="explore",
         )
 
-        # qa
-        a_qa = [
+        # question answering
+        answers = [
             answer_question(
                 self.memory_systems,
                 self.qa_function,
@@ -380,20 +412,21 @@ class DQNAgent:
             for question in self.questions
         ]
 
-        action_pair = (a_qa, self.action_explore2str[a_explore[0]])
         (
             observations,
             reward,
             done,
             truncated,
             info,
-        ) = self.env.step(action_pair)
+        ) = self.env.step((answers, self.action_explore2str[a_explore[0]]))
         done = done or truncated
+        self.memory_systems.long.decay()
 
         self.observations = observations["room"]
         self.questions = observations["questions"]
         encode_all_observations(self.memory_systems, self.observations)
-        self.save_agent_as_episodic_memory()
+        if self.save_agent_as_episodic:
+            self.save_agent_as_episodic_memory()
 
         # mm
         s_next_mm = self.get_deepcopied_working_memory_list()
@@ -423,7 +456,7 @@ class DQNAgent:
         save_q_mm: bool,
         train_val_test: Literal["train", "val", "test"] | None = None,
     ) -> None:
-        """Step c of the algorithm.
+        r"""Step c of the algorithm.
 
         $\pi_{mm}$:
             IN:  [    ,     ,     ,     ,     ]    OUT: [s   , a   ,     ,     ,     ]
@@ -459,7 +492,6 @@ class DQNAgent:
         assert len(a_mm) == len(self.memory_systems.short)
         for a_mm_, mem_short in zip(a_mm, self.memory_systems.short):
             manage_memory(self.memory_systems, self.action_mm2str[a_mm_], mem_short)
-        self.memory_systems.semantic.decay()
 
         # explore
         s_next_explore = self.get_deepcopied_working_memory_list()
@@ -478,7 +510,7 @@ class DQNAgent:
         return s_mm, q_mm, a_mm
 
     def fill_replay_buffer(self) -> None:
-        """Make the replay buffer full in the beginning with the uniformly-sampled
+        r"""Make the replay buffer full in the beginning with the uniformly-sampled
         actions. The filling continues until it reaches the warm start size.
 
         """
@@ -513,13 +545,19 @@ class DQNAgent:
                 new_episode_starts = True
 
     def train(self) -> None:
-        """Train the agent."""
+        r"""Train the agent."""
         self.fill_replay_buffer()  # fill up the buffer till warm start size
-        self.num_validation = 0
 
         self.epsilons = []
         self.training_loss = {"total": [], "mm": [], "explore": []}
         self.scores = {"train": [], "val": [], "test": None}
+
+        if self.validation_starts_at > 0:
+            for _ in range(
+                self.validation_starts_at // (self.env_config["terminates_at"] + 1)
+                - self.validation_interval
+            ):
+                self.scores["val"].append([0] * self.num_samples_for_results["val"])
 
         self.dqn.train()
 
@@ -556,8 +594,14 @@ class DQNAgent:
                 new_episode_starts = True
                 self.scores["train"].append(score)
                 score = 0
-                with torch.no_grad():
-                    self.validate()
+
+                if (
+                    self.iteration_idx >= self.validation_starts_at
+                ) and self.iteration_idx % (
+                    self.validation_interval * (self.env_config["terminates_at"] + 1)
+                ) == 0:
+                    with torch.no_grad():
+                        self.validate()
 
             if not new_episode_starts:
                 loss_mm, loss_explore, loss = update_model(
@@ -586,7 +630,7 @@ class DQNAgent:
 
                 # if hard update is needed
                 if self.iteration_idx % self.target_update_interval == 0:
-                    target_hard_update(self.dqn, self.dqn_target)
+                    target_hard_update(dqn=self.dqn, dqn_target=self.dqn_target)
 
                 # plotting & show training results
                 if (
@@ -604,7 +648,7 @@ class DQNAgent:
         self.env.close()
 
     def validate_test_middle(self, val_or_test: str) -> tuple[list, list, list, list]:
-        """A function shared by explore validation and test in the middle.
+        r"""A function shared by explore validation and test in the middle.
 
         Args:
             val_or_test: "val" or "test"
@@ -681,37 +725,43 @@ class DQNAgent:
         return scores_local, states_local, q_values_local, actions_local
 
     def validate(self) -> None:
-        """Validate the agent."""
+        r"""Validate the agent."""
         self.dqn.eval()
         scores_temp, states, q_values, actions = self.validate_test_middle("val")
+
+        num_episodes = self.iteration_idx // (self.env_config["terminates_at"] + 1)
 
         save_validation(
             scores_temp=scores_temp,
             scores=self.scores,
             default_root_dir=self.default_root_dir,
-            num_validation=self.num_validation,
-            val_filenames=self.val_filenames,
+            num_episodes=num_episodes,
+            validation_interval=self.validation_interval,
+            val_file_names=self.val_file_names,
             dqn=self.dqn,
         )
         save_states_q_values_actions(
-            states, q_values, actions, self.default_root_dir, "val", self.num_validation
+            states, q_values, actions, self.default_root_dir, "val", num_episodes
         )
         self.env.close()
-        self.num_validation += self.validation_interval
         self.dqn.train()
 
-    def test(self, checkpoint: str = None) -> None:
-        """Test the agent.
+    def test(self, checkpoint: str | None = None) -> None:
+        r"""Test the agent.
 
         Args:
-            checkpoint: The checkpoint to load. If None, the best checkpoint is loaded.
+            checkpoint: The checkpoint to override.
 
         """
         self.dqn.eval()
+
         self.env_config["seed"] = self.test_seed
         self.env = gym.make(self.env_str, **self.env_config)
 
-        self.dqn.load_state_dict(torch.load(self.val_filenames["best"]))
+        assert len(self.val_file_names) == 1, f"{len(self.val_file_names)} should be 1"
+
+        self.dqn.load_state_dict(torch.load(self.val_file_names[0]))
+
         if checkpoint is not None:
             self.dqn.load_state_dict(torch.load(checkpoint))
 
@@ -734,7 +784,7 @@ class DQNAgent:
         self.dqn.train()
 
     def plot_results(self, to_plot: str = "all", save_fig: bool = False) -> None:
-        """Plot things for DQN training.
+        r"""Plot things for DQN training.
 
         Args:
             to_plot: what to plot:

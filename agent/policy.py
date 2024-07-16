@@ -21,7 +21,12 @@ def encode_observation(memory_systems: MemorySystems, obs: list[str | int]) -> N
 
     """
     mem_short = ShortMemory.ob2short(obs)
-    memory_systems.short.add(mem_short)
+
+    check, error_msg = memory_systems.short.can_be_added(mem_short)
+    if check:
+        memory_systems.short.add(mem_short)
+    else:
+        raise ValueError(error_msg)
 
 
 def encode_all_observations(
@@ -39,10 +44,10 @@ def encode_all_observations(
         encode_observation(memory_systems, obs)
 
 
-def find_agent_current_location(memory_systems: MemorySystems) -> str | None:
+def find_agent_location(memory_systems: MemorySystems) -> str | None:
     """Find the current location of the agent.
 
-    Use the latest episodic memory about the agent's location.
+    Use the memory about the agent's location.
 
     Args:
         MemorySystems
@@ -53,40 +58,44 @@ def find_agent_current_location(memory_systems: MemorySystems) -> str | None:
     """
     mems_episodic = []
     for mem in memory_systems.get_working_memory():
-        if mem[0] == "agent" and mem[1] == "atlocation" and "timestamp" in mem[-1]:
+        if mem[0] == "agent" and mem[1] == "atlocation":
             mems_episodic.append(mem)
 
-    if len(mems_episodic) > 0:
-        agent_current_location = mems_episodic[-1][2]  # get the latest one
-        return agent_current_location
+    if len(mems_episodic) == 0:
+        return None
+
+    # Filter out memories with valid timestamps
+    mems_with_timestamp = [mem for mem in mems_episodic if "timestamp" in mem[3]]
+    if mems_with_timestamp:
+        # Sort by the maximum timestamp
+        mems_with_timestamp.sort(key=lambda x: max(x[3]["timestamp"]), reverse=True)
+        latest_timestamp = max(max(x[3]["timestamp"]) for x in mems_with_timestamp)
+        latest_memories = [
+            mem
+            for mem in mems_with_timestamp
+            if max(mem[3]["timestamp"]) == latest_timestamp
+        ]
+        latest_mem = random.choice(latest_memories)
+        return latest_mem[2]
+
+    # If no memories have a timestamp, select the strongest memory
+    mems_with_strength = [mem for mem in mems_episodic if "strength" in mem[3]]
+    if mems_with_strength:
+        strongest_strength = max(mem[3]["strength"] for mem in mems_with_strength)
+        strongest_memories = [
+            mem
+            for mem in mems_with_strength
+            if mem[3]["strength"] == strongest_strength
+        ]
+        strongest_mem = random.choice(strongest_memories)
+        return strongest_mem[2]
 
     return None
 
 
-def find_visited_locations(
-    memory_systems: MemorySystems,
-    sort_by: Literal["timestamp", "strength"] = "timestamp",
-) -> dict[str, list[str]]:
-    """Find the locations that the agent has visited so far.
-
-    Args:
-        MemorySystems: MemorySystems
-        sort_by: "timestamp" or "strength"
-
-    Returns:
-        visited_locations: a list of visited locations
-
-    """
-    visited_locations = []
-
-    for mem in memory_systems.get_working_memory():
-        if mem[0] == "agent" and mem[1] == "atlocation":
-            visited_locations.append(mem[2])
-
-
 def explore(
     memory_systems: MemorySystems,
-    explore_policy: str,
+    policy: Literal["random", "avoid_walls"],
 ) -> str:
     """Explore the room (sub-graph).
 
@@ -97,16 +106,16 @@ def explore(
 
     Args:
         memory_systems: MemorySystems
-        explore_policy: "random" or "avoid_walls"
+        policy: "random" or "avoid_walls"
 
     Returns:
         action: The exploration action to take.
 
     """
-    if explore_policy == "random":
+    if policy == "random":
         action = random.choice(["north", "east", "south", "west", "stay"])
-    elif explore_policy == "avoid_walls":
-        agent_current_location = find_agent_current_location(memory_systems)
+    elif policy == "avoid_walls":
+        agent_current_location = find_agent_location(memory_systems)
 
         # no information about the agent's location
         if agent_current_location is None:
@@ -136,7 +145,7 @@ def explore(
             to_avoid = []
 
             for mem in mems_map:
-                if mem[2].split("_")[0] == "room":
+                if "room" in mem[2].split("_")[0].lower():
                     to_take.append(mem[1])
                 elif mem[2] == "wall":
                     if mem[1] not in to_avoid:
@@ -161,7 +170,7 @@ def explore(
 
 def manage_memory(
     memory_systems: MemorySystems,
-    policy: str,
+    policy: Literal["episodic", "semantic", "random", "forget"],
     mem_short: list,
 ) -> None:
     """Non RL memory management policy. This function directly manages the long-term
@@ -170,15 +179,11 @@ def manage_memory(
 
     Args:
         MemorySystems
-        policy: "episodic", "semantic", or "forget"
+        policy: "episodic", "semantic", "random", or "forget"
         mem_short: a short-term memory to be moved into a long-term memory.
 
     """
-    assert policy.lower() in [
-        "episodic",
-        "semantic",
-        "forget",
-    ]
+    assert policy.lower() in ["episodic", "semantic", "random", "forget"]
     assert memory_systems.short.has_memory(mem_short)
     assert not memory_systems.short.is_empty
 
@@ -221,6 +226,30 @@ def manage_memory(
             else:
                 raise ValueError(error_msg)
 
+    elif policy.lower() == "random":
+        if random.choice(["episodic", "semantic"]) == "episodic":
+            mem_epi = ShortMemory.short2epi(mem_short)
+            check, error_msg = memory_systems.long.can_be_added(mem_epi)
+            if check:
+                memory_systems.long.add(mem_epi)
+            else:
+                if error_msg == "The memory system is full!":
+                    forget_long_when_full(memory_systems)
+                    memory_systems.long.add(mem_epi)
+                else:
+                    raise ValueError(error_msg)
+        else:
+            mem_sem = ShortMemory.short2sem(mem_short)
+            check, error_msg = memory_systems.long.can_be_added(mem_sem)
+            if check:
+                memory_systems.long.add(mem_sem)
+            else:
+                if error_msg == "The memory system is full!":
+                    forget_long_when_full(memory_systems)
+                    memory_systems.long.add(mem_sem)
+                else:
+                    raise ValueError(error_msg)
+
     elif policy.lower() == "forget":
         pass
 
@@ -232,7 +261,7 @@ def manage_memory(
 
 def answer_question(
     memory_systems: MemorySystems,
-    policy: str,
+    qa_function: Literal["latest_strongest", "latest", "strongest", "random"],
     question: list[str | int],
 ) -> None | str | int:
     """Use the memory systems to answer a question from RoomEnv-v2. It assumes that
@@ -243,7 +272,7 @@ def answer_question(
 
     Args:
         MemorySystems
-        qa_function: "random", "latest_strongest", or "strongest_latest".
+        qa_function: "latest_strongest", "latest", "strongest", or "random"
         question: A quadruple given by RoomEnv-v2, e.g., [laptop, atlocation, ?,
             current_time]
 
@@ -263,10 +292,10 @@ def answer_question(
     )
     mem_strongest = memory_object.retrieve_memory_by_qualifier("strength", "int", "max")
 
-    if policy.lower() == "random":
+    if qa_function.lower() == "random":
         return memory_object.retrieve_random_memory()[query_idx]
 
-    elif policy.lower() == "latest_strongest":
+    elif qa_function.lower() == "latest_strongest":
 
         if mem_latest is not None:
             return mem_latest[query_idx]
@@ -275,12 +304,24 @@ def answer_question(
         else:
             return None
 
-    elif policy.lower() == "strongest_latest":
+    elif qa_function.lower() == "strongest_latest":
 
         if mem_strongest is not None:
             return mem_strongest[query_idx]
         elif mem_latest is not None:
             return mem_latest[query_idx]
+        else:
+            return None
+
+    elif qa_function.lower() == "latest":
+        if mem_latest is not None:
+            return mem_latest[query_idx]
+        else:
+            return None
+
+    elif qa_function.lower() == "strongest":
+        if mem_strongest is not None:
+            return mem_strongest[query_idx]
         else:
             return None
 

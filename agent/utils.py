@@ -102,15 +102,25 @@ def argmax(iterable):
 
 
 def get_duplicate_dicts(search: dict, target: list) -> list:
-    """Find if there are duplicate dicts.
+    """Find dictionaries in a list that match a search dictionary.
+
+    This function searches for dictionaries in a target list that contain all key-value
+    pairs specified in the search dictionary. It returns a list of all matching
+    dictionaries.
 
     Args:
-        search: dict
-        target: target list to look up.
+        search (dict): The dictionary containing key-value pairs to search for.
+        target (list): The list of dictionaries to search within.
 
     Returns:
-        duplicates: a list of dicts or None
+        list: A list of dictionaries from the target list that match the search
+            dictionary. If no matches are found, an empty list is returned.
 
+    Example:
+        >>> search = {"a": 1, "b": 2}
+        >>> target = [{"a": 1, "b": 2, "c": 3}, {"a": 1, "b": 2}, {"a": 1}, {"b": 2}]
+        >>> get_duplicate_dicts(search, target)
+        [{"a": 1, "b": 2, "c": 3}, {"a": 1, "b": 2}]
     """
     assert isinstance(search, dict)
     duplicates = []
@@ -124,8 +134,31 @@ def get_duplicate_dicts(search: dict, target: list) -> list:
     return duplicates
 
 
-def list_duplicates_of(seq, item) -> list:
-    # https://stackoverflow.com/questions/5419204/index-of-duplicates-items-in-a-python-list
+def list_duplicates_of(seq: list, item: any) -> list:
+    """
+    Find all indices of an item in a list.
+
+    This function returns a list of indices where the specified item appears in the
+    sequence.
+
+    Args:
+        seq (list): The list in which to search for duplicates.
+        item (any): The item to search for in the list.
+
+    Returns:
+        list: A list of indices where the item appears in the sequence. If the item is
+            not found, the list is empty.
+
+    Example:
+        >>> seq = [1, 2, 3, 2, 1, 2, 4]
+        >>> item = 2
+        >>> list_duplicates_of(seq, item)
+        [1, 3, 5]
+
+        >>> item = 5
+        >>> list_duplicates_of(seq, item)
+        []
+    """
     start_at = -1
     locs = []
     while True:
@@ -162,14 +195,17 @@ def positional_encoding(
     """
     Generate sinusoidal positional encoding.
 
-    Parameters:
-    positions (int): The number of positions in the sequence.
-    dimensions (int): The dimension of the embedding vectors.
-    scaling_factor (float): The scaling factor used in the sinusoidal functions.
-    return_tensor (bool): If True, return a PyTorch tensor; otherwise, return a NumPy array.
+    Args:
+        positions (int): The number of positions in the sequence.
+        dimensions (int): The dimension of the embedding vectors.
+        scaling_factor (float): The scaling factor used in the sinusoidal functions.
+        return_tensor (bool): If True, return a PyTorch tensor; otherwise, return a
+            NumPy array.
 
     Returns:
-    Union[np.ndarray, torch.Tensor]: A positional encoding in the form of either a NumPy array or a PyTorch tensor.
+        Union[np.ndarray, torch.Tensor]: A positional encoding in the form of either a
+            NumPy array or a PyTorch tensor.
+
     """
     # Ensure the number of dimensions is even
     assert dimensions % 2 == 0, "The dimension must be even."
