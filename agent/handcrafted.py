@@ -41,7 +41,6 @@ class HandcraftedAgent:
             "latest_strongest", "latest", "strongest", "random"
         ] = "latest_strongest",
         explore_policy: Literal["random", "avoid_walls"] = "avoid_walls",
-        save_agent_as_episodic: bool = False,
         num_samples_for_results: int = 10,
         capacity: dict = {
             "long": 12,
@@ -62,7 +61,6 @@ class HandcraftedAgent:
                 "episodic_semantic", "episodic", "semantic", or "random"
             explore_policy: The room exploration policy. Choose one of "random",
                 or "avoid_walls"
-            save_agent_as_episodic: Whether or not to save the agent's memory
             num_samples_for_results: The number of samples to validate / test the agent.
             capacity: The capacity of each human-like memory systems.
             pretrain_semantic: Whether or not to pretrain the semantic memory system.
@@ -93,7 +91,6 @@ class HandcraftedAgent:
             "random",
             "avoid_walls",
         ]
-        self.save_agent_as_episodic = save_agent_as_episodic
         self.num_samples_for_results = num_samples_for_results
         self.capacity = capacity
         self.pretrain_semantic = pretrain_semantic
@@ -151,21 +148,6 @@ class HandcraftedAgent:
         if reset_semantic_decay:
             self.num_semantic_decayed = 0
 
-    def save_agent_as_episodic_memory(self) -> None:
-        """Move the agent's location related short-term memories to the long-term
-        memory system as episodic memories.
-
-        """
-        num_moved = 0
-        num_shorts_before = self.memory_systems.short.size
-        for mem_short in self.memory_systems.short:
-            if mem_short[0] == "agent":
-                manage_memory(self.memory_systems, "episodic", mem_short)
-                num_moved += 1
-        num_shorts_after = self.memory_systems.short.size
-
-        assert (num_shorts_before - num_shorts_after) == num_moved
-
     def test(self):
         """Test the agent. There is no training for this agent, since it is
         handcrafted."""
@@ -203,12 +185,13 @@ class HandcraftedAgent:
                     observations, info = self.env.reset()
                     env_started = True
 
+                # 1. Encode the observations as short-term memory
                 encode_all_observations(self.memory_systems, observations["room"])
-                if self.save_agent_as_episodic:
-                    self.save_agent_as_episodic_memory()
-                for mem_short in self.memory_systems.short:
-                    manage_memory(self.memory_systems, self.mm_policy, mem_short)
 
+                # 2. explore the room
+                action_explore = explore(self.memory_systems, self.explore_policy)
+
+                # 3. Answer the questions
                 answers = [
                     str(
                         answer_question(
@@ -220,7 +203,10 @@ class HandcraftedAgent:
                     for question in observations["questions"]
                 ]
 
-                action_explore = explore(self.memory_systems, self.explore_policy)
+                # 4. Manage the memory
+                for mem_short in self.memory_systems.short:
+                    manage_memory(self.memory_systems, self.mm_policy, mem_short)
+
                 action_pair = (answers, action_explore)
             self.scores.append(score)
 

@@ -61,7 +61,6 @@ class DQNAgent:
         },
         pretrain_semantic: Literal[False, "include_walls", "exclude_walls"] = False,
         semantic_decay_factor: float = 1.0,
-        save_agent_as_episodic: bool = True,
         dqn_params: dict = {
             "embedding_dim": 8,
             "num_layers_GNN": 2,
@@ -106,7 +105,6 @@ class DQNAgent:
             capacity: The capacity of each human-like memory systems
             pretrain_semantic: whether to pretrain the semantic memory system.
             semantic_decay_factor: decay factor for the semantic memory system
-            save_agent_as_episodic: whether to save the agent's memory
             dqn_params: parameters for the DQN
             num_samples_for_results: The number of samples to validate / test the agent.
             validation_interval: interval to validate
@@ -148,7 +146,6 @@ class DQNAgent:
         self.capacity = capacity
         self.pretrain_semantic = pretrain_semantic
         self.semantic_decay_factor = semantic_decay_factor
-        self.save_agent_as_episodic = save_agent_as_episodic
         self.env = gym.make(self.env_str, **self.env_config)
 
         self.device = torch.device(device)
@@ -290,21 +287,6 @@ class DQNAgent:
         """
         return deepcopy(self.memory_systems.get_working_memory().to_list())
 
-    def save_agent_as_episodic_memory(self) -> None:
-        r"""Move the agent's location related short-term memories to the long-term
-        memory system as episodic memories.
-
-        """
-        num_moved = 0
-        num_shorts_before = self.memory_systems.short.size
-        for mem_short in self.memory_systems.short:
-            if mem_short[0] == "agent":
-                manage_memory(self.memory_systems, "episodic", mem_short)
-                num_moved += 1
-        num_shorts_after = self.memory_systems.short.size
-
-        assert (num_shorts_before - num_shorts_after) == num_moved
-
     def step_a(
         self,
         greedy: bool,
@@ -333,8 +315,6 @@ class DQNAgent:
         self.observations = observations["room"]
         self.questions = observations["questions"]
         encode_all_observations(self.memory_systems, self.observations)
-        if self.save_agent_as_episodic:
-            self.save_agent_as_episodic_memory()
 
         # mm
         s_mm = self.get_deepcopied_working_memory_list()
@@ -425,8 +405,6 @@ class DQNAgent:
         self.observations = observations["room"]
         self.questions = observations["questions"]
         encode_all_observations(self.memory_systems, self.observations)
-        if self.save_agent_as_episodic:
-            self.save_agent_as_episodic_memory()
 
         # mm
         s_next_mm = self.get_deepcopied_working_memory_list()

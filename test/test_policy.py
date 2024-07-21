@@ -22,10 +22,6 @@ class TestFindAgentLocation(unittest.TestCase):
             short=self.short_memory, long=self.long_memory
         )
 
-        # Add memories to short-term memory
-        self.short_memory.add(["agent", "atlocation", "room1", {"current_time": 1}])
-        self.short_memory.add(["laptop", "atlocation", "room1", {"current_time": 1}])
-
         # Add memories to long-term memory
         self.long_memory.add(
             ["agent", "atlocation", "room3", {"timestamp": [2, 3], "strength": 3}]
@@ -38,87 +34,25 @@ class TestFindAgentLocation(unittest.TestCase):
             ["agent", "atlocation", "room5", {"timestamp": [3, 4], "strength": 2}]
         )
 
+        # Add memories to short-term memory
+        self.short_memory.add(["agent", "atlocation", "room1", {"current_time": 5}])
+        self.short_memory.add(["room1", "south", "wall", {"current_time": 5}])
+        self.short_memory.add(["laptop", "atlocation", "room1", {"current_time": 5}])
+
     def test_find_agent_location_latest(self):
         """Test finding the agent's location based on the latest timestamp."""
-        self.assertEqual(find_agent_location(self.memory_systems), "room5")
+        self.assertEqual(find_agent_location(self.memory_systems), "room1")
 
-    def test_find_agent_location_latest_duplicates(self):
-        """Test finding the agent's location based on the latest timestamp."""
-        locations = []
-        self.long_memory.add(
-            ["agent", "atlocation", "room6", {"timestamp": [2, 4], "strength": 3}]
+    def test_find_agent_location_not_in_short(self):
+        """Test finding the agent's location when it is not in short-term memory."""
+        self.short_memory.forget_all()
+
+        with self.assertRaises(ValueError) as context:
+            find_agent_location(self.memory_systems)
+        self.assertEqual(
+            str(context.exception),
+            "Make sure that the agent's short-term memory has the current location.",
         )
-
-        for _ in range(100):
-            location = find_agent_location(self.memory_systems)
-            locations.append(location)
-        location_counts = Counter(locations)
-        self.assertGreater(location_counts["room5"], 0)
-        self.assertGreater(location_counts["room6"], 0)
-
-    def test_find_agent_location_strongest(self):
-        """Test finding the agent's location based on the strongest memory when latest
-        is not available."""
-        # Remove memories with timestamps to test selection by strength
-        self.long_memory.forget(
-            ["agent", "atlocation", "room3", {"timestamp": [2, 3], "strength": 3}]
-        )
-        self.long_memory.forget(
-            ["agent", "atlocation", "room4", {"timestamp": [1], "strength": 4}]
-        )
-        self.long_memory.forget(
-            ["agent", "atlocation", "room5", {"timestamp": [3, 4], "strength": 2}]
-        )
-
-        location = find_agent_location(self.memory_systems)
-        self.assertEqual(location, "room2")
-
-    def test_find_agent_location_strongest_duplicates(self):
-        """Test finding the agent's location based on the strongest memory when latest
-        is not available."""
-        # Remove memories with timestamps to test selection by strength
-        self.long_memory.forget(
-            ["agent", "atlocation", "room3", {"timestamp": [2, 3], "strength": 3}]
-        )
-        self.long_memory.forget(
-            ["agent", "atlocation", "room4", {"timestamp": [1], "strength": 4}]
-        )
-        self.long_memory.forget(
-            ["agent", "atlocation", "room5", {"timestamp": [3, 4], "strength": 2}]
-        )
-        self.long_memory.add(["agent", "atlocation", "room7", {"strength": 5}])
-
-        locations = []
-        for _ in range(100):
-            location = find_agent_location(self.memory_systems)
-            locations.append(location)
-        location_counts = Counter(locations)
-        self.assertGreater(location_counts["room2"], 0)
-        self.assertGreater(location_counts["room7"], 0)
-
-    def test_find_agent_location_no_memories(self):
-        """Test finding the agent's location when there are no relevant memories."""
-        self.memory_systems.forget_all()
-        location = find_agent_location(self.memory_systems)
-        self.assertIsNone(location)
-
-    def test_find_agent_location_no_memories2(self):
-        """Test finding the agent's location when there are no relevant memories."""
-        self.memory_systems.forget_all()
-        self.short_memory.add(["agent", "haha", "room1", {"current_time": 1}])
-        self.short_memory.add(["laptop", "nope", "room1", {"current_time": 1}])
-
-        self.long_memory.add(
-            ["agent", "x", "room3", {"timestamp": [2, 3], "strength": 3}]
-        )
-        self.long_memory.add(["agent", "y", "room4", {"timestamp": [1], "strength": 4}])
-        self.long_memory.add(["agent", "x", "room2", {"strength": 5}])
-        self.long_memory.add(
-            ["agent", "z", "room5", {"timestamp": [3, 4], "strength": 2}]
-        )
-
-        location = find_agent_location(self.memory_systems)
-        self.assertIsNone(location)
 
 
 class TestExplore(unittest.TestCase):
@@ -130,10 +64,6 @@ class TestExplore(unittest.TestCase):
         self.memory_systems = MemorySystems(
             short=self.short_memory, long=self.long_memory
         )
-
-        # Add memories to short-term memory
-        self.short_memory.add(["agent", "atlocation", "room1", {"current_time": 1}])
-        self.short_memory.add(["laptop", "atlocation", "room1", {"current_time": 1}])
 
         # Add diverse memories to long-term memory
         self.long_memory.add(
@@ -157,6 +87,11 @@ class TestExplore(unittest.TestCase):
         self.long_memory.add(["room4", "east", "wall", {"strength": 1}])
         self.long_memory.add(["room4", "south", "wall", {"timestamp": [5]}])
 
+        # Add memories to short-term memory. This should contain the map of the rooms
+        self.short_memory.add(["agent", "atlocation", "room1", {"current_time": 6}])
+        self.short_memory.add(["room1", "south", "room3", {"current_time": 6}])
+        self.short_memory.add(["laptop", "atlocation", "room1", {"current_time": 6}])
+
     def test_explore_random(self):
         """Test the 'random' exploration policy."""
         actions = set()
@@ -175,8 +110,8 @@ class TestExplore(unittest.TestCase):
         for _ in range(100):
             action = explore(self.memory_systems, "avoid_walls")
             actions.add(action)
-        expected_actions = {"west", "stay"}
-        unexpected_actions = {"north", "east", "south"}
+        expected_actions = {"north", "south", "west"}
+        unexpected_actions = {"east", "stay"}
         self.assertTrue(actions.issubset(expected_actions))
         self.assertFalse(any(action in actions for action in unexpected_actions))
 
@@ -214,16 +149,28 @@ class TestExplore(unittest.TestCase):
         memory."""
         self.short_memory.forget_all()
         self.long_memory.forget_all()
+        self.short_memory.add(["agent", "atlocation", "room1", {"current_time": 6}])
+        self.short_memory.add(["room1", "north", "room6", {"current_time": 6}])
         self.long_memory.add(["agent", "atlocation", "room6", {"strength": 6}])
         self.long_memory.add(["room6", "north", "room7", {"strength": 6}])
         actions = set()
         for _ in range(100):
             action = explore(self.memory_systems, "avoid_walls")
             actions.add(action)
-        expected_actions = {"north"}
-        unexpected_actions = {"east", "south", "west", "stay"}
+        expected_actions = {"north", "east", "south", "west"}
+        unexpected_actions = {"stay"}
         self.assertTrue(actions.issubset(expected_actions))
         self.assertFalse(any(action in actions for action in unexpected_actions))
+
+    def test_explore_no_short_memory(self):
+        """Test exploration when the agent's location is not in short-term memory."""
+        self.short_memory.forget_all()
+        with self.assertRaises(ValueError) as context:
+            explore(self.memory_systems, "avoid_walls")
+        self.assertEqual(
+            str(context.exception),
+            "Make sure that the agent's short-term memory has the current location.",
+        )
 
 
 class TestEncodeObservation(unittest.TestCase):
@@ -537,10 +484,6 @@ class TestAnswerQuestion(unittest.TestCase):
             short=self.short_memory, long=self.long_memory
         )
 
-        # Add memories to short-term memory
-        self.short_memory.add(["agent", "atlocation", "room1", {"current_time": 1}])
-        self.short_memory.add(["laptop", "atlocation", "room1", {"current_time": 1}])
-
         # Add memories to long-term memory
         self.long_memory.add(
             ["agent", "atlocation", "room3", {"timestamp": [3], "strength": 3}]
@@ -551,11 +494,15 @@ class TestAnswerQuestion(unittest.TestCase):
         self.long_memory.add(["agent", "atlocation", "room2", {"strength": 5}])
         self.long_memory.add(["agent", "atlocation", "room5", {"timestamp": [1]}])
 
+        # Add memories to short-term memory
+        self.short_memory.add(["agent", "atlocation", "room1", {"current_time": 5}])
+        self.short_memory.add(["laptop", "atlocation", "room1", {"current_time": 5}])
+
     def test_answer_question_latest(self):
         """Test answering a question using the latest memory."""
         question = ["agent", "atlocation", "?", 5]
         answer = answer_question(self.memory_systems, "latest", question)
-        self.assertEqual(answer, "room4")
+        self.assertEqual(answer, "room1")
 
     def test_answer_question_strongest(self):
         """Test answering a question using the strongest memory."""
@@ -579,7 +526,7 @@ class TestAnswerQuestion(unittest.TestCase):
         """Test answering a question using the latest and strongest memory."""
         question = ["agent", "atlocation", "?", 5]
         answer = answer_question(self.memory_systems, "latest_strongest", question)
-        self.assertEqual(answer, "room4")
+        self.assertEqual(answer, "room1")
 
     def test_answer_question_strongest_latest(self):
         """Test answering a question using the strongest and latest memory."""

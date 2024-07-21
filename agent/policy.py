@@ -45,9 +45,7 @@ def encode_all_observations(
 
 
 def find_agent_location(memory_systems: MemorySystems) -> str | None:
-    """Find the current location of the agent.
-
-    Use the memory about the agent's location.
+    """Find the current location of the agent. This uses the agent's short-term memory.
 
     Args:
         MemorySystems
@@ -56,41 +54,13 @@ def find_agent_location(memory_systems: MemorySystems) -> str | None:
         agent_current_location: str | None
 
     """
-    mems_episodic = []
     for mem in memory_systems.get_working_memory():
-        if mem[0] == "agent" and mem[1] == "atlocation":
-            mems_episodic.append(mem)
+        if mem[0] == "agent" and mem[1] == "atlocation" and "current_time" in mem[3]:
+            return mem[2]
 
-    if len(mems_episodic) == 0:
-        return None
-
-    # Filter out memories with valid timestamps
-    mems_with_timestamp = [mem for mem in mems_episodic if "timestamp" in mem[3]]
-    if mems_with_timestamp:
-        # Sort by the maximum timestamp
-        mems_with_timestamp.sort(key=lambda x: max(x[3]["timestamp"]), reverse=True)
-        latest_timestamp = max(max(x[3]["timestamp"]) for x in mems_with_timestamp)
-        latest_memories = [
-            mem
-            for mem in mems_with_timestamp
-            if max(mem[3]["timestamp"]) == latest_timestamp
-        ]
-        latest_mem = random.choice(latest_memories)
-        return latest_mem[2]
-
-    # If no memories have a timestamp, select the strongest memory
-    mems_with_strength = [mem for mem in mems_episodic if "strength" in mem[3]]
-    if mems_with_strength:
-        strongest_strength = max(mem[3]["strength"] for mem in mems_with_strength)
-        strongest_memories = [
-            mem
-            for mem in mems_with_strength
-            if mem[3]["strength"] == strongest_strength
-        ]
-        strongest_mem = random.choice(strongest_memories)
-        return strongest_mem[2]
-
-    return None
+    raise ValueError(
+        "Make sure that the agent's short-term memory has the current location."
+    )
 
 
 def explore(
@@ -117,10 +87,6 @@ def explore(
     elif policy == "avoid_walls":
         agent_current_location = find_agent_location(memory_systems)
 
-        # no information about the agent's location
-        if agent_current_location is None:
-            action = random.choice(["north", "east", "south", "west", "stay"])
-
         # Get all the memories related to the current location
         mems_map = []
 
@@ -133,32 +99,21 @@ def explore(
             ]:
                 mems_map.append(mem)
 
-        # we know the agent's current location but there is no memory about the map
-        if len(mems_map) == 0:
-            action = random.choice(["north", "east", "south", "west", "stay"])
+        assert len(mems_map) > 0, (
+            "No memories about the map. Make sure that the agent's short-term memory "
+            "has the map."
+        )
 
+        to_take = ["north", "east", "south", "west"]
+
+        for mem in mems_map:
+            if mem[2] == "wall" and mem[1] in to_take:
+                to_take.remove(mem[1])
+
+        if len(to_take) == 0:  # This is a very special case where there only one room.
+            action = "stay"
         else:
-            # we know the agent's current location and there is at least one memory
-            # about the map and we want to avoid the walls
-
-            to_take = []
-            to_avoid = []
-
-            for mem in mems_map:
-                if "room" in mem[2].split("_")[0].lower():
-                    to_take.append(mem[1])
-                elif mem[2] == "wall":
-                    if mem[1] not in to_avoid:
-                        to_avoid.append(mem[1])
-
-            if len(to_take) > 0:
-                action = random.choice(to_take)
-            else:
-                options = ["north", "east", "south", "west", "stay"]
-                for e in to_avoid:
-                    options.remove(e)
-
-                action = random.choice(options)
+            action = random.choice(to_take)
 
     else:
         raise ValueError("Unknown exploration policy.")
@@ -270,6 +225,9 @@ def answer_question(
     short-term + (partial) long-term memory. The long-term memory used is partial,
     since it can be too big.
 
+    Short-term memory is first used to look for the latest memory and then the episodic
+    memory.
+
     Args:
         MemorySystems
         qa_function: "latest_strongest", "latest", "strongest", or "random"
@@ -287,15 +245,21 @@ def answer_question(
     if len(memory_object) == 0:
         return None
 
-    mem_latest = memory_object.retrieve_memory_by_qualifier(
-        "timestamp", "list", "max", "max"
-    )
-    mem_strongest = memory_object.retrieve_memory_by_qualifier("strength", "int", "max")
-
     if qa_function.lower() == "random":
         return memory_object.retrieve_random_memory()[query_idx]
 
-    elif qa_function.lower() == "latest_strongest":
+    mem_latest = memory_object.retrieve_memory_by_qualifier(
+        "current_time", "int", "max"
+    )
+
+    if mem_latest is None:
+        mem_latest = memory_object.retrieve_memory_by_qualifier(
+            "timestamp", "list", "max", "max"
+        )
+
+    mem_strongest = memory_object.retrieve_memory_by_qualifier("strength", "int", "max")
+
+    if qa_function.lower() == "latest_strongest":
 
         if mem_latest is not None:
             return mem_latest[query_idx]
