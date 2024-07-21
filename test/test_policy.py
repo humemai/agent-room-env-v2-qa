@@ -479,7 +479,7 @@ class TestAnswerQuestion(unittest.TestCase):
     def setUp(self):
         """Set up the test case with predefined memory systems."""
         self.short_memory = ShortMemory(capacity=3)
-        self.long_memory = LongMemory(capacity=4)
+        self.long_memory = LongMemory(capacity=6)
         self.memory_systems = MemorySystems(
             short=self.short_memory, long=self.long_memory
         )
@@ -493,6 +493,8 @@ class TestAnswerQuestion(unittest.TestCase):
         )
         self.long_memory.add(["agent", "atlocation", "room2", {"strength": 5}])
         self.long_memory.add(["agent", "atlocation", "room5", {"timestamp": [1]}])
+        self.long_memory.add(["laptop", "atlocation", "room2", {"timestamp": [4]}])
+        self.long_memory.add(["laptop", "atlocation", "room2", {"strength": 2}])
 
         # Add memories to short-term memory
         self.short_memory.add(["agent", "atlocation", "room1", {"current_time": 5}])
