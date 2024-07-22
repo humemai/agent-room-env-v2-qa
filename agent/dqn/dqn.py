@@ -10,7 +10,7 @@ import gymnasium as gym
 import torch
 import torch.optim as optim
 from humemai.utils import is_running_notebook, write_yaml
-from humemai.memory import ShortMemory, LongMemory, MemorySystems
+from humemai.memory import Memory, ShortMemory, LongMemory, MemorySystems
 
 from .nn import GNN
 from .utils import (
@@ -193,11 +193,6 @@ class DQNAgent:
         self.dqn_target.load_state_dict(self.dqn.state_dict())
         self.dqn_target.eval()
 
-        self.replay_buffer_mm = ReplayBuffer(self.replay_buffer_size, self.batch_size)
-        self.replay_buffer_explore = ReplayBuffer(
-            self.replay_buffer_size, self.batch_size
-        )
-
         # optimizer
         self.optimizer = optim.Adam(list(self.dqn.parameters()))
 
@@ -275,122 +270,67 @@ class DQNAgent:
         if reset_semantic_decay:
             self.num_semantic_decayed = 0
 
-    def get_deepcopied_working_memory_list(self) -> list[list]:
-        r"""Get a deepcopied memory state.
-
-        This is necessary because the memory state is a list of lists, which is
-        mutable.
-
-        Returns:
-            deepcopied working memory
-
-        """
-        return deepcopy(self.memory_systems.get_working_memory().to_list())
-
-    def step_a(
+    def step(
         self,
+        working_memory: Memory,
+        questions: list[str],
         greedy: bool,
-        save_q_mm: bool,
-        train_val_test: Literal["train", "val", "test"] | None = None,
-    ) -> None:
-        r"""Step a of the algorithm.
-
-        $\pi_{mm}$:
-            IN:  [    ,     ,     ,     ,     ]    OUT: [s   , a   ,     ,     ,     ]
-        $\pi_{expore}$:
-            IN:  [    ,     ,     ,     ,     ]    OUT: [    ,     ,     ,     ,     ]
-        $\pi_{qa}$:
-            IN:  [    ,     ,     ,     ,     ]    OUT: [    ,     ,     ,     ,     ]
-
-        blanks are Nones
+    ) -> tuple[
+        dict,
+        list[int],
+        list[list[float]],
+        list[int],
+        list[list[float]],
+        float,
+        list[str],
+        bool,
+    ]:
+        r"""Step of the algorithm. This is the only step that interacts with the
+        environment.
 
         Args:
+            working_memory: The memory used for the (estimated) MDP state.
+            questions: questions to answer
             greedy: whether to use greedy policy
-            save_q_mm: whether to save q_values
-            train_val_test: whether to train, validate, or test
-
-        """
-        self.init_memory_systems()
-        observations, info = self.env.reset()
-        self.observations = observations["room"]
-        self.questions = observations["questions"]
-        encode_all_observations(self.memory_systems, self.observations)
-
-        # mm
-        s_mm = self.get_deepcopied_working_memory_list()
-        a_mm, q_mm = select_action(  # the dimension of a_mm is [num_actions_taken]
-            state=s_mm,
-            greedy=greedy,
-            dqn=self.dqn,
-            epsilon=self.epsilon,
-            policy_type="mm",
-        )
-        assert len(a_mm) == len(self.memory_systems.short)
-        for a_mm_, mem_short in zip(a_mm, self.memory_systems.short):
-            manage_memory(self.memory_systems, self.action_mm2str[a_mm_], mem_short)
-
-        self.tuple_mm = [s_mm, a_mm, None, None, None]
-
-        if save_q_mm:
-            for q_mm_ in q_mm:
-                self.q_values[train_val_test]["mm"].append(q_mm_)
-
-        return s_mm, q_mm, a_mm
-
-    def step_b(
-        self,
-        greedy: bool,
-        save_mm_to_replay_buffer: bool,
-        save_q_explore: bool,
-        train_val_test: Literal["train", "val", "test"] | None = None,
-    ) -> tuple[float, bool]:
-        r"""Step b of the algorithm.
-
-        $\pi_{mm}$:
-            IN:  [s   , a   ,     ,     ,     ]    OUT: [s   , a   , r   , s'  , done]
-        $\pi_{expore}$:
-            IN:  [    ,     ,     ,     ,     ]    OUT: [s   , a   , r   ,     ,     ]
-        $\pi_{qa}$:
-            IN:  [    ,     ,     ,     ,     ]    OUT: [s   , a   , r   ,     ,     ]
-
-        blanks are Nones
-
-        Out of the three (a, b, and c) steps, this is the only step that interacts
-        with the environment.
-
-        Args:
-            greedy: whether to use greedy policy
-            save_mm_to_replay_buffer: whether to save to replay buffer
-            save_q_explore: whether to save q_values
-            train_val_test: whether to train, validate, or test
 
         Returns:
-            reward: reward from the environment
-            done: whether the episode is done
+            observations, a_explore, q_explore, a_mm, q_mm, reward, answers, done
 
         """
-        assert self.tuple_mm[2:] == [None, None, None]
+        assert self.memory_systems.short.size > 0, "Short-term memory is empty."
 
-        # explore
-        s_explore = self.get_deepcopied_working_memory_list()
-
+        # 1. explore
         a_explore, q_explore = select_action(
-            state=s_explore,
+            state=working_memory.to_list(),
             greedy=greedy,
             dqn=self.dqn,
             epsilon=self.epsilon,
             policy_type="explore",
         )
 
-        # question answering
+        # 2. question answering
         answers = [
             answer_question(
-                self.memory_systems,
+                working_memory,
                 self.qa_function,
                 question,
             )
-            for question in self.questions
+            for question in questions
         ]
+
+        # 3. manage memory
+        a_mm, q_mm = select_action(  # the dimension of a_mm is [num_actions_taken]
+            state=working_memory.to_list(),
+            greedy=greedy,
+            dqn=self.dqn,
+            epsilon=self.epsilon,
+            policy_type="mm",
+        )
+
+        # the dimension of a_mm is [num_actions_taken]
+        assert len(a_mm) == self.memory_systems.short.size
+        for a_mm_, mem_short in zip(a_mm, self.memory_systems.short):
+            manage_memory(self.memory_systems, self.action_mm2str[a_mm_], mem_short)
 
         (
             observations,
@@ -399,128 +339,54 @@ class DQNAgent:
             truncated,
             info,
         ) = self.env.step((answers, self.action_explore2str[a_explore[0]]))
-        done = done or truncated
         self.memory_systems.long.decay()
+        self.num_semantic_decayed += 1
+        done = done or truncated
 
-        self.observations = observations["room"]
-        self.questions = observations["questions"]
-        encode_all_observations(self.memory_systems, self.observations)
-
-        # mm
-        s_next_mm = self.get_deepcopied_working_memory_list()
-
-        self.tuple_mm[2] = reward
-        self.tuple_mm[3] = s_next_mm
-        self.tuple_mm[4] = done
-
-        self.tuple_explore = [s_explore, None, None, None, None]
-        self.tuple_explore[1] = a_explore
-        self.tuple_explore[2] = reward
-
-        if save_mm_to_replay_buffer:
-            self.replay_buffer_mm.store(*self.tuple_mm)
-
-        if save_q_explore:
-            for q_explore_ in q_explore:
-                self.q_values[train_val_test]["explore"].append(q_explore_)
-
-        return s_explore, q_explore, a_explore, reward, done
-
-    def step_c(
-        self,
-        greedy: bool,
-        save_explore_to_replay_buffer: bool,
-        done: bool,
-        save_q_mm: bool,
-        train_val_test: Literal["train", "val", "test"] | None = None,
-    ) -> None:
-        r"""Step c of the algorithm.
-
-        $\pi_{mm}$:
-            IN:  [    ,     ,     ,     ,     ]    OUT: [s   , a   ,     ,     ,     ]
-        $\pi_{expore}$:
-            IN:  [s   , a   , r   ,     ,     ]    OUT: [s   , a   , r   , s'  , done]
-        $\pi_{qa}$:
-            IN:  [s   , a   , r   ,     ,     ]    OUT: [s   , a   , r   , s'  , done]
-
-        blanks are Nones
-
-        Args:
-            greedy: whether to use greedy policy
-            save_explore_to_replay_buffer: whether to save to replay buffer
-            done: whether the episode was done
-            save_q_mm: whether to save q_values
-            train_val_test: whether to train, validate, or test
-
-        """
-        assert self.tuple_explore[3:] == [None, None]
-
-        s_mm = self.get_deepcopied_working_memory_list()
-
-        # mm
-        a_mm, q_mm = select_action(
-            state=s_mm,
-            greedy=greedy,
-            dqn=self.dqn,
-            epsilon=self.epsilon,
-            policy_type="mm",
+        return (
+            observations,
+            a_explore[0],  # remove the `num_actions_taken` dimension!
+            q_explore[0],  # remove the `num_actions_taken` dimension!
+            a_mm,
+            q_mm,
+            reward,
+            answers,
+            done,
         )
-
-        # the dimension of a_mm is [num_actions_taken]
-        assert len(a_mm) == len(self.memory_systems.short)
-        for a_mm_, mem_short in zip(a_mm, self.memory_systems.short):
-            manage_memory(self.memory_systems, self.action_mm2str[a_mm_], mem_short)
-
-        # explore
-        s_next_explore = self.get_deepcopied_working_memory_list()
-
-        self.tuple_mm = [s_mm, a_mm, None, None, None]
-        self.tuple_explore[3] = s_next_explore
-        self.tuple_explore[4] = done
-
-        if save_explore_to_replay_buffer:
-            self.replay_buffer_explore.store(*self.tuple_explore)
-
-        if save_q_mm:
-            for q_mm_ in q_mm:
-                self.q_values[train_val_test]["mm"].append(q_mm_)
-
-        return s_mm, q_mm, a_mm
 
     def fill_replay_buffer(self) -> None:
         r"""Make the replay buffer full in the beginning with the uniformly-sampled
         actions. The filling continues until it reaches the warm start size.
 
         """
-        new_episode_starts = True
-        while (
-            len(self.replay_buffer_mm) < self.warm_start
-            or len(self.replay_buffer_explore) < self.warm_start
-        ):
-            if new_episode_starts:
-                s_mm, q_mm, a_mm = self.step_a(
-                    greedy=False,
-                    save_q_mm=False,
-                    train_val_test=None,
-                )
-                new_episode_starts = False
+        self.replay_buffer = ReplayBuffer(self.replay_buffer_size, self.batch_size)
+        done = True
 
-            s_explore, q_explore, a_explore, reward, done = self.step_b(
-                greedy=False,
-                save_mm_to_replay_buffer=True,
-                save_q_explore=False,
-                train_val_test=None,
-            )
-            s_mm, q_mm, a_mm = self.step_c(
-                greedy=False,
-                save_explore_to_replay_buffer=True,
-                done=done,
-                save_q_mm=False,
-                train_val_test=None,
-            )
-
+        while len(self.replay_buffer) < self.warm_start:
             if done:
-                new_episode_starts = True
+                self.init_memory_systems(reset_semantic_decay=True)
+                observations, info = self.env.reset()
+                encode_all_observations(self.memory_systems, observations["room"])
+                done = False
+            else:
+                working_memory = self.memory_systems.get_working_memory()
+                state = deepcopy(working_memory.to_list())
+                (
+                    observations,
+                    a_explore,
+                    q_explore,
+                    a_mm,
+                    q_mm,
+                    reward,
+                    answers,
+                    done,
+                ) = self.step(working_memory, observations["questions"], greedy=False)
+                encode_all_observations(self.memory_systems, observations["room"])
+                working_memory = self.memory_systems.get_working_memory()
+                next_state = deepcopy(working_memory.to_list())
+                self.replay_buffer.store(
+                    *[state, a_explore, a_mm, reward, next_state, done]
+                )
 
     def train(self) -> None:
         r"""Train the agent."""
@@ -539,37 +405,42 @@ class DQNAgent:
 
         self.dqn.train()
 
-        new_episode_starts = True
+        done = True
         score = 0
         self.iteration_idx = 0
 
         while True:
-            if new_episode_starts:
-                s_mm, q_mm, a_mm = self.step_a(
-                    greedy=False,
-                    save_q_mm=True,
-                    train_val_test="train",
+            if done:
+                self.init_memory_systems(reset_semantic_decay=True)
+                observations, info = self.env.reset()
+                encode_all_observations(self.memory_systems, observations["room"])
+                done = False
+            else:
+                working_memory = self.memory_systems.get_working_memory()
+                state = deepcopy(working_memory.to_list())
+                (
+                    observations,
+                    a_explore,
+                    q_explore,
+                    a_mm,
+                    q_mm,
+                    reward,
+                    answers,
+                    done,
+                ) = self.step(working_memory, observations["questions"], greedy=False)
+                encode_all_observations(self.memory_systems, observations["room"])
+                working_memory = self.memory_systems.get_working_memory()
+                next_state = deepcopy(working_memory.to_list())
+                self.replay_buffer.store(
+                    *[state, a_explore, a_mm, reward, next_state, done]
                 )
-                new_episode_starts = False
-
-            s_explore, q_explore, a_explore, reward, done = self.step_b(
-                greedy=False,
-                save_mm_to_replay_buffer=True,
-                save_q_explore=True,
-                train_val_test="train",
-            )
-            s_mm, q_mm, a_mm = self.step_c(
-                greedy=False,
-                save_explore_to_replay_buffer=True,
-                done=done,
-                save_q_mm=True,
-                train_val_test="train",
-            )
-            score += reward
-            self.iteration_idx += 1
+                self.q_values["train"]["explore"].append(q_explore)
+                self.q_values["train"]["mm"].append(q_mm)
+                score += reward
+                self.iteration_idx += 1
 
             if done:
-                new_episode_starts = True
+                assert self.num_semantic_decayed == self.env_config["terminates_at"] + 1
                 self.scores["train"].append(score)
                 score = 0
 
@@ -581,10 +452,9 @@ class DQNAgent:
                     with torch.no_grad():
                         self.validate()
 
-            if not new_episode_starts:
+            else:
                 loss_mm, loss_explore, loss = update_model(
-                    replay_buffer_mm=self.replay_buffer_mm,
-                    replay_buffer_explore=self.replay_buffer_explore,
+                    replay_buffer=self.replay_buffer,
                     optimizer=self.optimizer,
                     device=self.device,
                     dqn=self.dqn,
@@ -644,58 +514,48 @@ class DQNAgent:
         actions_local = []
 
         for idx in range(self.num_samples_for_results[val_or_test]):
-            new_episode_starts = True
+            done = True
             score = 0
-            if idx == self.num_samples_for_results[val_or_test] - 1:
-                save_useful = True
-            else:
-                save_useful = False
-
             while True:
-                if new_episode_starts:
-                    s_mm, q_mm, a_mm = self.step_a(
-                        greedy=True,
-                        save_q_mm=save_useful,
-                        train_val_test=val_or_test,
+                if done:
+                    self.init_memory_systems(reset_semantic_decay=True)
+                    observations, info = self.env.reset()
+                    encode_all_observations(self.memory_systems, observations["room"])
+                    done = False
+
+                else:
+                    working_memory = self.memory_systems.get_working_memory()
+                    state = deepcopy(working_memory.to_list())
+                    (
+                        observations,
+                        a_explore,
+                        q_explore,
+                        a_mm,
+                        q_mm,
+                        reward,
+                        answers,
+                        done,
+                    ) = self.step(
+                        working_memory, observations["questions"], greedy=True
                     )
-                    new_episode_starts = False
+                    encode_all_observations(self.memory_systems, observations["room"])
+                    score += reward
 
-                    if save_useful:
-                        state = {"mm": s_mm}
-                        q_values = {"mm": q_mm}
-                        action = {"mm": a_mm}
-
-                s_explore, q_explore, a_explore, reward, done = self.step_b(
-                    greedy=True,
-                    save_mm_to_replay_buffer=False,
-                    save_q_explore=save_useful,
-                    train_val_test=val_or_test,
-                )
-
-                if save_useful:
-                    state["explore"] = s_explore
-                    q_values["explore"] = q_explore
-                    action["explore"] = a_explore
-
-                    states_local.append(state)
-                    q_values_local.append(q_values)
-                    actions_local.append(action)
-
-                s_mm, q_mm, a_mm = self.step_c(
-                    greedy=True,
-                    save_explore_to_replay_buffer=False,
-                    done=done,
-                    save_q_mm=save_useful,
-                    train_val_test=val_or_test,
-                )
-                score += reward
-
-                if save_useful:
-                    state = {"mm": s_mm}
-                    q_values = {"mm": q_mm}
-                    action = {"mm": a_mm}
+                    if idx == self.num_samples_for_results[val_or_test] - 1:
+                        states_local.append(state)
+                        q_values_local.append({"explore": q_explore, "mm": q_mm})
+                        actions_local.append({"explore": a_explore, "mm": a_mm})
+                        self.q_values[val_or_test]["explore"].append(q_explore)
+                        self.q_values[val_or_test]["mm"].append(q_mm)
 
                 if done:
+                    assert (
+                        self.num_semantic_decayed
+                        == self.env_config["terminates_at"] + 1
+                    ), (
+                        f"{self.num_semantic_decayed} should be "
+                        f"{self.env_config['terminates_at'] + 1}  "
+                    )
                     break
 
             scores_local.append(score)

@@ -1,8 +1,7 @@
 # Agent for RoomEnv-v2
 
 [![DOI](https://zenodo.org/badge/777194227.svg)](https://zenodo.org/doi/10.5281/zenodo.10876430)
-
-<!-- [![DOI](https://img.shields.io/badge/Paper-PDF-red.svg)]() -->
+[![DOI](https://img.shields.io/badge/Paper-PDF-red.svg)]()
 
 This repo is to train an agent with a GNN that interacts with the [RoomEnv-v2](https://github.com/humemai/room-env).
 
@@ -14,29 +13,31 @@ This repo is to train an agent with a GNN that interacts with the [RoomEnv-v2](h
    recommended so that you don't mess up with the system python.
 1. Install the requirements by running `pip install -r requirements.txt`
 
-## Run training
+## Training
 
-```sh
-python train.py
-```
+- [Jupyter Notebook for training](train-dqn.ipynb)
+- The training results are saved at [`./trained-results`](./trained-results/).
 
-The hyperparameters can be configured in [`train.yaml`](./train.yaml). The training results with the
-checkpoints will be saved at [`./training-results/`](./training-results/).
+## HumemAI Agent
 
-## Results
+| A visualization of the two phases involved in training. |
+| :-----------------------------------------------------: |
+|              ![](./figures/gnn-steps.png)               |
 
 ## pdoc documentation
 
-Click on [this link](https://humemai.github.io/agent-room-env-v2-gnn) to see the HTML rendered
-docstrings
+Click on [this link](https://humemai.github.io/agent-room-env-v2-lstm) to see the HTML
+rendered docstrings
 
 ## Contributing
 
-Contributions are what make the open source community such an amazing place to be learn, inspire, and create. Any contributions you make are **greatly appreciated**.
+Contributions are what make the open source community such an amazing place to be learn,
+inspire, and create. Any contributions you make are **greatly appreciated**.
 
 1. Fork the Project
 1. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
-1. Run `make test && make style && make quality` in the root repo directory, to ensure code quality.
+1. Run `make test && make style && make quality` in the root repo directory, to ensure
+   code quality.
 1. Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
 1. Push to the Branch (`git push origin feature/AmazingFeature`)
 1. Open a Pull Request
@@ -52,7 +53,3 @@ Contributions are what make the open source community such an amazing place to b
 - [Taewoon Kim](https://taewoon.kim/)
 - [Michael Cochez](https://www.cochez.nl/)
 - [Vincent Francois-Lavet](http://vincent.francois-l.be/)
-
-## License
-
-[MIT](https://choosealicense.com/licenses/mit/)

@@ -190,7 +190,7 @@ class GNN(torch.nn.Module):
         short_triples = []
         node_map = {}
         current_node_idx = 0
-        agent_node = []
+        agent_node = None
 
         for quadruple in sample:
             head, relation, tail, qualifiers = quadruple
@@ -218,7 +218,7 @@ class GNN(torch.nn.Module):
                     }
                 )
             if head == "agent":
-                agent_node.append(node_map[head])
+                agent_node = node_map[head]
 
             edge_index.append([node_map[head], node_map[tail]])
 
@@ -228,6 +228,7 @@ class GNN(torch.nn.Module):
             .t()
             .contiguous()
         )
+        assert agent_node is not None, "Agent node should not be None."
 
         to_return = Data(
             x=x,
@@ -291,10 +292,7 @@ class GNN(torch.nn.Module):
 
             for i, j, an in zip(batch.ptr, batch.ptr[1:], batch.agent_node):
                 x_ = x[i:j]
-                if an:  # if there is an agent node (list is not empty)
-                    node.append(x_[an[0]])  # use the agent node
-                else:  # if there is no agent node (list is empty)
-                    node.append(torch.mean(x_, dim=0))  # use the average of all nodes
+                node.append(x_[an])  # use THE agent node
 
             node = torch.stack(node)
 

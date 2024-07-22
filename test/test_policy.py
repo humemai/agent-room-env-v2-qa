@@ -503,13 +503,13 @@ class TestAnswerQuestion(unittest.TestCase):
     def test_answer_question_latest(self):
         """Test answering a question using the latest memory."""
         question = ["agent", "atlocation", "?", 5]
-        answer = answer_question(self.memory_systems, "latest", question)
+        answer = answer_question(self.memory_systems.get_working_memory(), "latest", question)
         self.assertEqual(answer, "room1")
 
     def test_answer_question_strongest(self):
         """Test answering a question using the strongest memory."""
         question = ["agent", "atlocation", "?", 5]
-        answer = answer_question(self.memory_systems, "strongest", question)
+        answer = answer_question(self.memory_systems.get_working_memory(), "strongest", question)
         self.assertEqual(answer, "room2")
 
     def test_answer_question_random(self):
@@ -517,7 +517,7 @@ class TestAnswerQuestion(unittest.TestCase):
         question = ["agent", "atlocation", "?", 5]
         answers = set()
         for _ in range(100):
-            answer = answer_question(self.memory_systems, "random", question)
+            answer = answer_question(self.memory_systems.get_working_memory(), "random", question)
             answers.add(answer)
         self.assertTrue(answers.issubset({"room1", "room2", "room3", "room4", "room5"}))
         self.assertGreaterEqual(
@@ -527,23 +527,23 @@ class TestAnswerQuestion(unittest.TestCase):
     def test_answer_question_latest_strongest(self):
         """Test answering a question using the latest and strongest memory."""
         question = ["agent", "atlocation", "?", 5]
-        answer = answer_question(self.memory_systems, "latest_strongest", question)
+        answer = answer_question(self.memory_systems.get_working_memory(), "latest_strongest", question)
         self.assertEqual(answer, "room1")
 
     def test_answer_question_strongest_latest(self):
         """Test answering a question using the strongest and latest memory."""
         question = ["agent", "atlocation", "?", 5]
-        answer = answer_question(self.memory_systems, "strongest_latest", question)
+        answer = answer_question(self.memory_systems.get_working_memory(), "strongest_latest", question)
         self.assertEqual(answer, "room2")
 
     def test_answer_question_no_relevant_memory(self):
         """Test answering a question when no relevant memory is found."""
         question = ["car", "atlocation", "?", 5]
-        answer = answer_question(self.memory_systems, "latest", question)
+        answer = answer_question(self.memory_systems.get_working_memory(), "latest", question)
         self.assertIsNone(answer)
-        answer = answer_question(self.memory_systems, "strongest", question)
+        answer = answer_question(self.memory_systems.get_working_memory(), "strongest", question)
         self.assertIsNone(answer)
-        answer = answer_question(self.memory_systems, "latest_strongest", question)
+        answer = answer_question(self.memory_systems.get_working_memory(), "latest_strongest", question)
         self.assertIsNone(answer)
-        answer = answer_question(self.memory_systems, "strongest_latest", question)
+        answer = answer_question(self.memory_systems.get_working_memory(), "strongest_latest", question)
         self.assertIsNone(answer)

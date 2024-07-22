@@ -6,7 +6,7 @@ The trained neural network policies are not implemented yet.
 from typing import Literal
 import random
 
-from humemai.memory import ShortMemory, MemorySystems
+from humemai.memory import Memory, ShortMemory, MemorySystems
 
 
 def encode_observation(memory_systems: MemorySystems, obs: list[str | int]) -> None:
@@ -215,7 +215,7 @@ def manage_memory(
 
 
 def answer_question(
-    memory_systems: MemorySystems,
+    working_memory: Memory,
     qa_function: Literal["latest_strongest", "latest", "strongest", "random"],
     question: list[str | int],
 ) -> None | str | int:
@@ -229,7 +229,7 @@ def answer_question(
     memory.
 
     Args:
-        MemorySystems
+        working_memory: Working memory
         qa_function: "latest_strongest", "latest", "strongest", or "random"
         question: A quadruple given by RoomEnv-v2, e.g., [laptop, atlocation, ?,
             current_time]
@@ -239,8 +239,7 @@ def answer_question(
 
     """
     query_idx = question.index("?")
-    working = memory_systems.get_working_memory()
-    memory_object = working.query(question[:-1] + ["?"])
+    memory_object = working_memory.query(question[:-1] + ["?"])
 
     if len(memory_object) == 0:
         return None

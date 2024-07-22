@@ -191,11 +191,12 @@ class HandcraftedAgent:
                 # 2. explore the room
                 action_explore = explore(self.memory_systems, self.explore_policy)
 
+                working_memory = self.memory_systems.get_working_memory()
                 # 3. Answer the questions
                 answers = [
                     str(
                         answer_question(
-                            self.memory_systems,
+                            working_memory,
                             self.qa_function,
                             question,
                         )

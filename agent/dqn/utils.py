@@ -31,7 +31,9 @@ class ReplayBuffer:
             values of dtype=object.
         next_obs_buf (np.ndarray): Buffer for next observations, initialized similarly
             to obs_buf.
-        acts_buf (np.ndarray): Buffer for actions, initialized as an array of None
+        acts_explore_buf (np.ndarray): Buffer for explore actions, initialized as an
+            array of None values of dtype=object.
+        acts_mm_buf (np.ndarray): Buffer for mm actions, initialized as an array of None
             values of dtype=object.
         rews_buf (np.ndarray): Buffer for rewards, initialized as an array of zeros
             of dtype=np.float32.
@@ -52,38 +54,40 @@ class ReplayBuffer:
 
     for _ in range(6):
 
-        rand_dict_1 = {str(i): str(random.randint(0, 10)) for i in range(3)}
-        rand_dict_2 = {str(i): str(random.randint(0, 10)) for i in range(3)}
-        action = [i for i in range(random.randint(1, 10))]
+        obs = {str(i): str(random.randint(0, 10)) for i in range(3)}
+        next_obs = {str(i): str(random.randint(0, 10)) for i in range(3)}
+        action_explore = random.randint(0, 4)
+        action_mm = [random.randint(0, 3) for _ in range(random.randint(1, 10))]
+        reward = random.randint(0, 1)
+        done = random.choice([False, True])
         buffer.store(
             *[
-                rand_dict_1,
-                action,
-                random.choice([-1, 1]),
-                rand_dict_2,
-                random.choice([False, True]),
+                obs,
+                action_explore,
+                action_mm,
+                reward,
+                next_obs,
+                done,
             ]
         )
 
     sample = buffer.sample_batch()
     ```
     >>> sample
-    {'obs': array([{'0': '3', '1': '4', '2': '5'}, {'0': '5', '1': '1', '2': '0'},
-            {'0': '9', '1': '6', '2': '2'}, {'0': '7', '1': '2', '2': '4'}],
+    {'obs': array([{'0': '5', '1': '10', '2': '2'}, {'0': '9', '1': '2', '2': '5'},
+            {'0': '6', '1': '10', '2': '9'}, {'0': '6', '1': '0', '2': '6'}],
         dtype=object),
-    'next_obs': array([{'0': '5', '1': '0', '2': '5'}, {'0': '5', '1': '1', '2': '9'},
-            {'0': '5', '1': '8', '2': '4'}, {'0': '6', '1': '9', '2': '4'}],
+    'next_obs': array([{'0': '10', '1': '0', '2': '2'}, {'0': '9', '1': '2', '2': '4'},
+            {'0': '1', '1': '7', '2': '1'}, {'0': '8', '1': '9', '2': '0'}],
         dtype=object),
-    'acts': array([list([0, 1, 2, 3, 4, 5]), list([0, 1, 2, 3, 4, 5, 6, 7]),
-            list([0, 1]), list([0])], dtype=object),
-    'rews': array([ 1., -1., -1.,  1.], dtype=float32),
-    'done': array([0., 1., 1., 0.], dtype=float32)}
+    'acts_explore': array([4., 3., 2., 2.], dtype=float32),
+    'acts_mm': array([list([2, 0, 2, 1, 3]), list([0, 1, 2]),
+            list([0, 1, 3, 1, 1, 2, 2]), list([0, 1, 2, 3, 4, 5, 6, 7, 8, 9])],
+        dtype=object),
+    'rews': array([0., 1., 1., 0.], dtype=float32),
+    'done': array([1., 0., 1., 1.], dtype=float32)}
 
-    >>> sample["acts"]
-    array([list([0, 1, 2, 3, 4, 5, 6]), list([0, 1, 2]),
-        list([0, 1, 2, 3, 4, 5, 6, 7]), list([0, 1, 2, 3])], dtype=object)
-
-    >>> sample["acts"].shape
+    >>> sample["acts_mm"].shape
     (4,)
 
     """
@@ -103,9 +107,9 @@ class ReplayBuffer:
             ValueError: If batch_size is greater than size.
 
         Note:
-            The obs_buf, next_obs_buf, and acts_buf are initialized with `None` values
-            and have `dtype=object` to accommodate arbitrary Python objects, ensuring
-            flexibility in storing different types of data.
+            The obs_buf, next_obs_buf, and acts_mm_buf are initialized with `None`
+            values and have `dtype=object` to accommodate arbitrary Python objects,
+            ensuring flexibility in storing different types of data.
 
         """
 
@@ -114,7 +118,8 @@ class ReplayBuffer:
 
         self.obs_buf = np.array([None] * size, dtype=object)
         self.next_obs_buf = np.array([None] * size, dtype=object)
-        self.acts_buf = np.array([None] * size, dtype=object)
+        self.acts_explore_buf = np.zeros([size], dtype=int)
+        self.acts_mm_buf = np.array([None] * size, dtype=object)
         self.rews_buf = np.zeros([size], dtype=np.float32)
         self.done_buf = np.zeros(size, dtype=np.float32)
         self.max_size, self.batch_size = size, batch_size
@@ -129,7 +134,8 @@ class ReplayBuffer:
     def store(
         self,
         obs: np.ndarray,
-        act: np.ndarray,
+        act_explore: np.ndarray,
+        act_mm: np.ndarray,
         rew: float,
         next_obs: np.ndarray,
         done: bool,
@@ -138,7 +144,8 @@ class ReplayBuffer:
 
         Args:
             obs: observation
-            act: action
+            act_explore: explore action
+            act_mm: memory management action
             rew: reward
             next_obs: next observation
             done: done
@@ -146,102 +153,38 @@ class ReplayBuffer:
         """
         self.obs_buf[self.ptr] = obs
         self.next_obs_buf[self.ptr] = next_obs
-        self.acts_buf[self.ptr] = act
+        self.acts_explore_buf[self.ptr] = act_explore
+        self.acts_mm_buf[self.ptr] = act_mm
         self.rews_buf[self.ptr] = rew
         self.done_buf[self.ptr] = done
         self.ptr = (self.ptr + 1) % self.max_size
         self.size = min(self.size + 1, self.max_size)
 
-    def sample_indices(self) -> np.ndarray:
-        r"""Sample indices from the buffer."""
-        return np.random.choice(self.size, size=self.batch_size, replace=False)
-
-    def sample_batch(self, idxs: np.ndarray | None = None) -> dict[str, np.ndarray]:
+    def sample_batch(self) -> dict[str, np.ndarray]:
         r"""Sample a batch of data from the buffer.
-
-        Args:
-            idxs: indices to sample from the buffer. If None, idxs will be
-                randomly sampled.
 
         Returns:
             A dictionary of samples from the replay buffer.
                 obs: np.ndarray,
                 next_obs: np.ndarray,
-                acts: np.ndarray,
-                rews: float,
-                done: bool
+                acts_explore: np.ndarray,
+                acts_mm: np.ndarray,
+                rews: np.ndarray,
+                done: np.ndarray
 
         """
-        if idxs is None:
-            idxs = self.sample_indices()
+        idxs = np.random.choice(self.size, size=self.batch_size, replace=False)
         return dict(
             obs=self.obs_buf[idxs],
             next_obs=self.next_obs_buf[idxs],
-            acts=self.acts_buf[idxs],
+            acts_explore=self.acts_explore_buf[idxs],
+            acts_mm=self.acts_mm_buf[idxs],
             rews=self.rews_buf[idxs],
             done=self.done_buf[idxs],
         )
 
     def __len__(self) -> int:
         return self.size
-
-
-class MultiAgentReplayBuffer:
-    r"""A simple numpy replay buffer for multi-agent."""
-
-    def __init__(self, replay_buffer_1: ReplayBuffer, replay_buffer_2: ReplayBuffer):
-        r"""Initialize replay buffer.
-
-        Attributes:
-            replay_buffer_1 (ReplayBuffer): replay buffer for memory management
-            replay_buffer_2 (ReplayBuffer): replay buffer for explore
-
-        Args:
-            replay_buffer_1: replay buffer for memory management
-            replay_buffer_2: replay buffer for explore
-
-        """
-        self.replay_buffer_1 = replay_buffer_1
-        self.replay_buffer_2 = replay_buffer_2
-        assert len(replay_buffer_1) == len(
-            replay_buffer_2
-        ), "The replay buffers must have the same size."
-        assert (
-            replay_buffer_1.batch_size == replay_buffer_2.batch_size
-        ), "The replay buffers must have the same batch size."
-
-    def sample_batch(self, sample_same_index: bool) -> tuple[dict, dict]:
-        r"""Sample a batch of data from the buffer.
-
-        Ars:
-            sample_same_index: whether to sample the same index for both replay buffers.
-
-        Returns:
-            batch_1: a dictionary of samples from the replay buffer 1.
-                obs: np.ndarray,
-                next_obs: np.ndarray,
-                acts: np.ndarray,
-                rews: float,
-                done: bool
-
-            batch_2: a dictionary of samples from the replay buffer 2.
-                obs: np.ndarray,
-                next_obs: np.ndarray,
-                acts: np.ndarray,
-                rews: float,
-                done: bool
-
-        """
-
-        if sample_same_index:
-            idxs = self.replay_buffer_1.sample_indices()
-            batch_1 = self.replay_buffer_1.sample_batch(idxs)
-            batch_2 = self.replay_buffer_2.sample_batch(idxs)
-        else:
-            batch_1 = self.replay_buffer_1.sample_batch()
-            batch_2 = self.replay_buffer_2.sample_batch()
-
-        return batch_1, batch_2
 
 
 def plot_results(
@@ -674,8 +617,8 @@ def compute_loss_explore(
     Args:
         batch: A dictionary of samples from the replay buffer.
             obs: np.ndarray,
-            act: np.ndarray,
-            rew: float,
+            acts: np.ndarray,
+            rews: float,
             next_obs: np.ndarray,
             done: bool,
         device: cpu or cuda
@@ -724,8 +667,7 @@ def compute_loss_explore(
 
 
 def update_model(
-    replay_buffer_mm: ReplayBuffer,
-    replay_buffer_explore: ReplayBuffer,
+    replay_buffer: ReplayBuffer,
     optimizer: torch.optim.Adam,
     device: str,
     dqn: torch.nn.Module,
@@ -737,8 +679,7 @@ def update_model(
     r"""Update the model by gradient descent.
 
     Args:
-        replay_buffer_mm: replay buffer for memory management
-        replay_buffer_explore: replay buffer for explore
+        replay_buffer: replay buffer
         optimizer: optimizer
         device: cpu or cuda
         dqn: dqn model
@@ -752,11 +693,21 @@ def update_model(
             explore and combined
 
     """
-    buffer_combined = MultiAgentReplayBuffer(replay_buffer_mm, replay_buffer_explore)
-    batch_mm, batch_explore = buffer_combined.sample_batch(sample_same_index=True)
-
-    assert np.array_equal(batch_mm["rews"], batch_explore["rews"])
-    assert np.array_equal(batch_mm["done"], batch_explore["done"])
+    batch = replay_buffer.sample_batch()
+    batch_mm = {
+        "obs": batch["obs"],
+        "acts": batch["acts_mm"],
+        "rews": batch["rews"],
+        "next_obs": batch["next_obs"],
+        "done": batch["done"],
+    }
+    batch_explore = {
+        "obs": batch["obs"],
+        "acts": batch["acts_explore"],
+        "rews": batch["rews"],
+        "next_obs": batch["next_obs"],
+        "done": batch["done"],
+    }
 
     loss_mm = compute_loss_mm(batch_mm, device, dqn, dqn_target, ddqn, gamma)
     loss_explore = compute_loss_explore(
@@ -782,7 +733,7 @@ def update_model(
 
 
 def select_action(
-    state: dict,
+    state: list[list],
     greedy: bool,
     dqn: torch.nn.Module,
     epsilon: float,
@@ -791,9 +742,9 @@ def select_action(
     r"""Select action(s) from the input state, with epsilon-greedy policy.
 
     Args:
-        state: The current state of the memory systems. This is NOT what the gym env
-            gives you. This is made by the agent. This shouldn't be a batch of samples,
-            but a single sample without a batch dimension.
+        state: The working memory. This is NOT what the gym env gives you. This is made
+            by the agent. This shouldn't be a batch of samples, but a single sample
+            without a batch dimension.
         greedy: always pick greedy action if True
         dqn: dqn model
         epsilon: epsilon
@@ -869,9 +820,9 @@ def save_validation(
 
 
 def save_states_q_values_actions(
-    states: list,
-    q_values: list,
-    actions: list,
+    states: list[list[list]],
+    q_values: list[dict],
+    actions: list[dict],
     default_root_dir: str,
     val_or_test: str,
     num_episodes: int | None = None,
@@ -897,7 +848,13 @@ def save_states_q_values_actions(
 
     assert len(states) == len(q_values) == len(actions)
     to_save = [
-        {"state": s, "q_values": q, "action": a}
+        {
+            "state": s,
+            "q_values_explore": q["explore"],
+            "action_explore": a["explore"],
+            "q_values_mm": q["mm"],
+            "action_mm": a["mm"],
+        }
         for s, q, a in zip(states, q_values, actions)
     ]
     write_yaml(to_save, filename)
