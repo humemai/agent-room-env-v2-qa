@@ -196,6 +196,8 @@ def plot_results(
     num_iterations: int,
     total_maximum_episode_rewards: int,
     default_root_dir: str,
+    action_mm2str,
+    action_explore2str,
     to_plot: str = "all",
     save_fig: bool = False,
 ) -> None:
@@ -210,6 +212,8 @@ def plot_results(
         num_iterations: the total number of iterations.
         total_maximum_episode_rewards: the total maximum episode rewards.
         default_root_dir: the root directory where the results are saved.
+        action_mm2str: a dictionary to convert mm actions to strings.
+        action_explore2str: a dictionary to convert explore actions to strings.
         to_plot: what to plot:
             "all": plot everything
             "training_td_loss": plot training td loss
@@ -278,8 +282,12 @@ def plot_results(
             plt.title(f"Q-values (mm), {split}")
             for action_number in range(3):
                 plt.plot(
-                    [q_value_[action_number] for q_value_ in q_values[split]["mm"]],
-                    label=f"action {action_number}",
+                    [
+                        q[action_number]
+                        for q_value_ in q_values[split]["mm"]
+                        for q in q_value_
+                    ],
+                    label=action_mm2str[action_number],
                 )
             plt.legend(loc="upper left")
             plt.xlabel("number of actions")
@@ -293,7 +301,7 @@ def plot_results(
                         q_value_[action_number]
                         for q_value_ in q_values[split]["explore"]
                     ],
-                    label=f"action {action_number}",
+                    label=action_explore2str[action_number],
                 )
             plt.legend(loc="upper left")
             plt.xlabel("number of actions")
@@ -674,7 +682,7 @@ def update_model(
     dqn_target: torch.nn.Module,
     ddqn: str,
     gamma: float,
-    loss_weights: dict[str, int] = {"mm": 0.5, "explore": 0.5},
+    loss_weights: dict[str, int] = {"mm": 1, "explore": 1},
 ) -> tuple[float, float, float]:
     r"""Update the model by gradient descent.
 
@@ -751,8 +759,10 @@ def select_action(
         policy_type: "mm" or "explore"
 
     Returns:
-        selected_actions: dimension is [num_actions_taken]
-        q_values: dimension is [num_actions_taken, action_space_dim]
+        selected_actions: dimension is [num_actions_taken] for "explore" and scalar for
+            "mm"
+        q_values: dimension is [num_actions_taken, action_space_dim] for "explore" and
+            [action_space_dim] for "mm"
 
     """
     # Since dqn requires a batch dimension, we need to encapsulate the state in a list
@@ -763,10 +773,16 @@ def select_action(
 
     action_space_dim = q_values.shape[1]
 
+    q_values = q_values.tolist()
+
     if greedy or epsilon < np.random.random():
         selected_actions = [argmax(q_value_) for q_value_ in q_values]
     else:
         selected_actions = [random.randint(0, action_space_dim - 1) for _ in q_values]
+
+    if policy_type == "explore":
+        q_values = q_values[0]
+        selected_actions = selected_actions[0]
 
     return selected_actions, q_values
 

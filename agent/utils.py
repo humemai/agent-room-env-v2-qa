@@ -102,7 +102,7 @@ def argmax(iterable):
 
 
 def get_duplicate_dicts(search: dict, target: list) -> list:
-    """Find dictionaries in a list that match a search dictionary.
+    r"""Find dictionaries in a list that match a search dictionary.
 
     This function searches for dictionaries in a target list that contain all key-value
     pairs specified in the search dictionary. It returns a list of all matching

@@ -10,6 +10,7 @@ class MLP(torch.nn.Module):
     """Multi-layer perceptron with ReLU activation functions.
 
     Attributes:
+        input_size: Input size of the linear layer.
         hidden_size: Hidden size of the linear layer.
         num_hidden_layers: Number of layers in the MLP.
         n_actions: Number of actions.
@@ -21,6 +22,7 @@ class MLP(torch.nn.Module):
     def __init__(
         self,
         n_actions: int,
+        input_size: int,
         hidden_size: int,
         device: str,
         num_hidden_layers: int = 1,
@@ -30,6 +32,7 @@ class MLP(torch.nn.Module):
 
         Args:
             n_actions: Number of actions.
+            input_size: Input size of the linear layer.
             hidden_size: Hidden size of the linear layer.
             device: "cpu" or "cuda".
             num_hidden_layers: int, number of layers in the MLP.
@@ -38,6 +41,7 @@ class MLP(torch.nn.Module):
         """
         super(MLP, self).__init__()
         self.device = device
+        self.input_size = input_size
         self.hidden_size = hidden_size
         self.num_hidden_layers = num_hidden_layers
         self.n_actions = n_actions
@@ -45,7 +49,10 @@ class MLP(torch.nn.Module):
 
         # Define the layers for the advantage stream
         advantage_layers = []
-        for _ in range(self.num_hidden_layers):
+        advantage_layers.append(
+            torch.nn.Linear(self.input_size, self.hidden_size, device=self.device)
+        )
+        for _ in range(self.num_hidden_layers - 1):
             advantage_layers.append(
                 torch.nn.Linear(self.hidden_size, self.hidden_size, device=self.device)
             )
@@ -58,7 +65,10 @@ class MLP(torch.nn.Module):
         if self.dueling_dqn:
             # Define the layers for the value stream
             value_layers = []
-            for _ in range(self.num_hidden_layers):
+            value_layers.append(
+                torch.nn.Linear(self.input_size, self.hidden_size, device=self.device)
+            )
+            for _ in range(self.num_hidden_layers - 1):
                 value_layers.append(
                     torch.nn.Linear(
                         self.hidden_size, self.hidden_size, device=self.device
@@ -109,7 +119,6 @@ class GNN(torch.nn.Module):
         relation_to_idx: The relation to index mapping.
         mlp_mm: The MLP for the memory management policy.
         mlp_explore: The MLP for the explore policy.
-
 
     """
 
@@ -162,6 +171,7 @@ class GNN(torch.nn.Module):
 
         self.mlp_mm = MLP(
             n_actions=3,
+            input_size=embedding_dim * 3,
             hidden_size=embedding_dim,
             device=device,
             num_hidden_layers=num_hidden_layers_MLP,
@@ -169,6 +179,7 @@ class GNN(torch.nn.Module):
         )
         self.mlp_explore = MLP(
             n_actions=5,
+            input_size=embedding_dim,
             hidden_size=embedding_dim,
             device=device,
             num_hidden_layers=num_hidden_layers_MLP,
@@ -244,6 +255,16 @@ class GNN(torch.nn.Module):
     ) -> list[torch.Tensor]:
         """Forward pass of the GNN model.
 
+        `batch = next(iter(loader))` creates a `DataBatch` object that looks like this:
+
+        DataBatch(x=[num_entities_in_batch, 8], edge_index=[2, num_edges_in_batch],
+        short_triples=[batch_size], agent_node=[batch_size],
+        batch=[num_entities_in_batch], ptr=[batch_size +1])
+
+        The batching is done by incrementing the `ptr` array. The `ptr` array is used to
+        index the `x` array. The `short_triples` array is 
+
+
         Args:
             data: The input data as a batch.
             policy_type: The policy type to use.
@@ -262,6 +283,9 @@ class GNN(torch.nn.Module):
 
         x, edge_index = batch.x, batch.edge_index
 
+        if data.shape[0] > 1:
+            import pdb; pdb.set_trace()
+
         for gnn_layer in self.gnn:
             x = gnn_layer(x, edge_index)
             x = F.relu(x)
@@ -273,13 +297,16 @@ class GNN(torch.nn.Module):
             for i, j, short in zip(batch.ptr, batch.ptr[1:], batch.short_triples):
                 x_ = x[i:j]
                 for k in short:
-                    triple_ = (
-                        x_[k["head_idx"]]
-                        + self.relation_embeddings(torch.tensor(k["relation_idx"]))
-                        + x_[k["tail_idx"]]
+                    triple_ = torch.cat(
+                        [
+                            x_[k["head_idx"]],
+                            self.relation_embeddings(torch.tensor(k["relation_idx"])),
+                            x_[k["tail_idx"]],
+                        ],
+                        dim=0,
                     )
                     triple.append(triple_)
-            triple = torch.stack(triple)
+            triple = torch.stack(triple, dim=0)
 
             q_mm = self.mlp_mm(triple)
             q_mm = [q_mm[i:j] for i, j in zip(short_lengths[:-1], short_lengths[1:])]

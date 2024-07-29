@@ -338,15 +338,15 @@ class DQNAgent:
             done,
             truncated,
             info,
-        ) = self.env.step((answers, self.action_explore2str[a_explore[0]]))
+        ) = self.env.step((answers, self.action_explore2str[a_explore]))
         self.memory_systems.long.decay()
         self.num_semantic_decayed += 1
         done = done or truncated
 
         return (
             observations,
-            a_explore[0],  # remove the `num_actions_taken` dimension!
-            q_explore[0],  # remove the `num_actions_taken` dimension!
+            a_explore,
+            q_explore,
             a_mm,
             q_mm,
             reward,
@@ -645,6 +645,8 @@ class DQNAgent:
             self.num_iterations,
             self.env.unwrapped.total_maximum_episode_rewards,
             self.default_root_dir,
+            self.action_mm2str,
+            self.action_explore2str,
             to_plot,
             save_fig,
         )
