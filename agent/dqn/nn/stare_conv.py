@@ -82,7 +82,7 @@ class StarEConvLayer(MessagePassing):
         self,
         entity_embeddings: torch.Tensor,
         relation_embeddings: torch.Tensor,
-        edge_index: torch.Tensor,
+        edge_idx: torch.Tensor,
         edge_type: torch.Tensor,
         quals: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -91,7 +91,7 @@ class StarEConvLayer(MessagePassing):
         `entity_embeddings` is a tensor of shape [num_nodes, emb_dim], which is a stack
         of entity embeddings. Since x is a sampled sub-graph of the entire hidden graph,
         `num_nodes` is always less than the total number of global entities.
-        `edge_index` is a tensor of shape [2, num_edges] and `edge_type` is a tensor
+        `edge_idx` is a tensor of shape [2, num_edges] and `edge_type` is a tensor
         of shape [num_edges]. `relation_embeddings` is a tensor of shape
         [num_rels, emb_dim].
 
@@ -99,7 +99,7 @@ class StarEConvLayer(MessagePassing):
         Args:
             entity_embeddings: Node (the entities in a given graph) feature matrix.
             relation_embeddings: Relation embeddings.
-            edge_index: Graph edge indices.
+            edge_idx: Graph edge indices.
             edge_type: Edge type indices.
             quals: Qualifier indices.
 
@@ -107,15 +107,15 @@ class StarEConvLayer(MessagePassing):
             Output node features and relation embeddings.
         """
         if self.device is None:
-            self.device = edge_index.device
+            self.device = edge_idx.device
 
         rel_embed = torch.cat([relation_embeddings, self.loop_rel], dim=0)
-        num_edges = edge_index.size(1) // 2
+        num_edges = edge_idx.size(1) // 2
         num_ent = entity_embeddings.size(0)
 
         self.in_index, self.out_index = (
-            edge_index[:, :num_edges],
-            edge_index[:, num_edges:],
+            edge_idx[:, :num_edges],
+            edge_idx[:, num_edges:],
         )
         self.in_type, self.out_type = edge_type[:num_edges], edge_type[num_edges:]
 
@@ -358,17 +358,17 @@ class StarEConvLayer(MessagePassing):
         return aggr_out
 
     @staticmethod
-    def compute_norm(edge_index: torch.Tensor, num_ent: int) -> torch.Tensor:
+    def compute_norm(edge_idx: torch.Tensor, num_ent: int) -> torch.Tensor:
         """Compute normalization coefficients for edges.
 
         Args:
-            edge_index: Edge indices.
+            edge_idx: Edge indices.
             num_ent: Number of entities.
 
         Returns:
             Normalization coefficients.
         """
-        row, col = edge_index
+        row, col = edge_idx
         edge_weight = torch.ones_like(row).float()
         deg = scatter_add(edge_weight, row, dim=0, dim_size=num_ent)
         deg_inv = deg.pow(-0.5)

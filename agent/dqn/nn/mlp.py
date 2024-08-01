@@ -1,11 +1,11 @@
-"""A simple MLP with dueling DQN support."""
+"""A ResNet-like MLP with dueling DQN support."""
 
 import torch
 from torch.nn.init import xavier_normal_
 
 
 class MLP(torch.nn.Module):
-    """Multi-layer perceptron with ReLU activation functions.
+    """ResNet-like Multi-layer perceptron with ReLU activation functions.
 
     Attributes:
         input_size: Input size of the linear layer.
@@ -46,32 +46,33 @@ class MLP(torch.nn.Module):
         self.dueling_dqn = dueling_dqn
 
         # Define the layers for the advantage stream
-        advantage_layers = []
-        advantage_layers.append(
+        self.advantage_layers = torch.nn.ModuleList()
+        self.advantage_layers.append(
             self._init_layer(
                 torch.nn.Linear(self.input_size, self.hidden_size, device=self.device)
             )
         )
         for _ in range(self.num_hidden_layers - 1):
-            advantage_layers.append(
+            self.advantage_layers.append(
                 self._init_layer(
                     torch.nn.Linear(
                         self.hidden_size, self.hidden_size, device=self.device
                     )
                 )
             )
-            advantage_layers.append(torch.nn.ReLU())
-        advantage_layers.append(
+        self.advantage_layers.append(
             self._init_layer(
                 torch.nn.Linear(self.hidden_size, self.n_actions, device=self.device)
             )
         )
-        self.advantage_layer = torch.nn.Sequential(*advantage_layers)
+        self.advantage_skip = torch.nn.Linear(
+            self.input_size, self.hidden_size, device=self.device
+        )
 
         if self.dueling_dqn:
             # Define the layers for the value stream
-            value_layers = []
-            value_layers.append(
+            self.value_layers = torch.nn.ModuleList()
+            self.value_layers.append(
                 self._init_layer(
                     torch.nn.Linear(
                         self.input_size, self.hidden_size, device=self.device
@@ -79,20 +80,21 @@ class MLP(torch.nn.Module):
                 )
             )
             for _ in range(self.num_hidden_layers - 1):
-                value_layers.append(
+                self.value_layers.append(
                     self._init_layer(
                         torch.nn.Linear(
                             self.hidden_size, self.hidden_size, device=self.device
                         )
                     )
                 )
-                value_layers.append(torch.nn.ReLU())
-            value_layers.append(
+            self.value_layers.append(
                 self._init_layer(
                     torch.nn.Linear(self.hidden_size, 1, device=self.device)
                 )
             )
-            self.value_layer = torch.nn.Sequential(*value_layers)
+            self.value_skip = torch.nn.Linear(
+                self.input_size, self.hidden_size, device=self.device
+            )
 
     def _init_layer(self, layer):
         if isinstance(layer, torch.nn.Linear):
@@ -111,11 +113,20 @@ class MLP(torch.nn.Module):
 
         """
 
+        def forward_layers(layers, x, skip_layer):
+            identity = skip_layer(x)
+            for layer in layers[:-1]:
+                out = torch.relu(layer(x))
+                x = out + identity  # Residual connection
+                identity = x  # Update identity for next block
+            out = layers[-1](x)
+            return out
+
         if self.dueling_dqn:
-            value = self.value_layer(x)
-            advantage = self.advantage_layer(x)
+            value = forward_layers(self.value_layers, x, self.value_skip)
+            advantage = forward_layers(self.advantage_layers, x, self.advantage_skip)
             q = value + advantage - advantage.mean(dim=-1, keepdim=True)
         else:
-            q = self.advantage_layer(x)
+            q = forward_layers(self.advantage_layers, x, self.advantage_skip)
 
         return q

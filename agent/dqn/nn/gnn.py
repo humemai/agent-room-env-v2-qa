@@ -104,8 +104,8 @@ class GNN(torch.nn.Module):
                         in_channels=self.embedding_dim,
                         out_channels=self.embedding_dim,
                         num_rels=len(relations),
-                        # gcn_drop=self.gcn_layer_params["gcn_drop"],
-                        # triple_qual_weight=self.gcn_layer_params["triple_qual_weight"],
+                        gcn_drop=self.gcn_layer_params["gcn_drop"],
+                        triple_qual_weight=self.gcn_layer_params["triple_qual_weight"],
                     )
                     for _ in range(self.gcn_layer_params["num_layers"])
                 ]
@@ -181,73 +181,45 @@ class GNN(torch.nn.Module):
             {'current_time': 2, 'timestamp': [0], 'strength': 1}]]
 
         Returns:
-            entity_embeddings: The shape is [number of unique entities, emb_dim]
-            relation_embeddings: The shape is [number of unique relations * 2, emb_dim]
-            edge_index: The shape is [2, num_quadruples]
+            edge_idx: The shape is [2, num_quadruples]
             edge_type: The shape is [num_quadruples]
             quals: The shape is [3, number of qualifier key-value pairs]
-            short_memory_idx: [number of short-term memories]
-            agent_entity_idx: The index of the agent entity from entity_embeddings
-            num_short_memories: The number of short-term memories
+
+            edge_idx_inv: The shape is [2, num_quadruples]
+            edge_type_inv: The shape is [num_quadruples]
+            quals_inv: The shape is [3, number of qualifier key-value pairs]
+
+            short_memory_idx: The shape is [number of short-term memories]
+                the idx indexes `edge_idx` and `edge_type`
+            agent_entity_idx: One scalar value. the idx indexes `entity_embeddings`
+
 
         """
-        entity_embeddings = []
-        relation_embeddings = []
-        edge_index = []
+        edge_idx = []
         edge_type = []
-        entity_map = {}
-        relation_map = {}
-        num_short_memories = torch.tensor(0)
+        quals = []
 
-        # first deal with head, relation, and tail
-        for idx, quadruple in enumerate(sample):
+        edge_idx_inv = []
+        edge_type_inv = []
+        quals_inv = []
+
+        short_memory_idx = []
+        agent_entity_idx = None
+
+        for i, quadruple in enumerate(sample):
             head, relation, tail, qualifiers = quadruple
-
-            if head not in entity_map:
-                entity_map[head] = len(entity_map)
-                entity_embeddings.append(
-                    self.entity_embeddings[torch.tensor(self.entity_to_idx[head])]
-                )
-
-            if tail not in entity_map:
-                entity_map[tail] = len(entity_map)
-                entity_embeddings.append(
-                    self.entity_embeddings[torch.tensor(self.entity_to_idx[tail])]
-                )
-
-            if relation not in relation_map:
-                relation_map[relation] = len(relation_map)
-                relation_embeddings.append(
-                    self.relation_embeddings[
-                        torch.tensor(self.relation_to_idx[relation])
-                    ]
-                )
 
             if head == "agent":
-                agent_entity_index = entity_map[head]
+                agent_entity_idx = self.entity_to_idx[head]
 
-            edge_index.append([entity_map[head], entity_map[tail]])
-            edge_type.append(relation_map[relation])
+            if tail == "agent":
+                agent_entity_idx = self.entity_to_idx[tail]
 
-        # add inverse
-        edge_index += [[edge[1], edge[0]] for edge in edge_index]
-        edge_type += [rel + len(relation_embeddings) for rel in edge_type]
+            edge_idx.append([self.entity_to_idx[head], self.entity_to_idx[tail]])
+            edge_type.append(self.relation_to_idx[relation])
 
-        for relation in list(relation_map.keys()):
-            relation_inv = relation + "_inv"
-            relation_map[relation_inv] = len(relation_map)
-            relation_embeddings.append(
-                self.relation_embeddings[
-                    torch.tensor(self.relation_to_idx[relation_inv])
-                ]
-            )
-
-        quals = []
-        short_memory_idx = []
-
-        # now deal with the qualifiers
-        for idx, quadruple in enumerate(sample):
-            head, relation, tail, qualifiers = quadruple
+            edge_idx_inv.append([self.entity_to_idx[tail], self.entity_to_idx[head]])
+            edge_type_inv.append(self.relation_to_idx[relation + "_inv"])
 
             for q_rel, q_entity in qualifiers.items():
 
@@ -257,37 +229,25 @@ class GNN(torch.nn.Module):
                     q_entity_str = str(round(q_entity))
 
                 if q_rel == "current_time":
-                    short_memory_idx.append(idx)
-                    num_short_memories += 1
-
-                if q_rel not in relation_map:
-                    relation_map[q_rel] = len(relation_map)
-                    relation_embeddings.append(
-                        self.relation_embeddings[
-                            torch.tensor(self.relation_to_idx[q_rel])
-                        ]
-                    )
-
-                if q_entity_str not in entity_map:
-                    entity_map[q_entity_str] = len(entity_map)
-                    entity_embeddings.append(
-                        self.entity_embeddings[
-                            torch.tensor(self.entity_to_idx[q_entity_str])
-                        ]
-                    )
+                    short_memory_idx.append(i)
 
                 quals.append(
                     [
-                        relation_map[q_rel],
-                        entity_map[q_entity_str],
-                        idx,
+                        self.relation_to_idx[q_rel],
+                        self.entity_to_idx[q_entity_str],
+                        i,
+                    ]
+                )
+                quals_inv.append(
+                    [
+                        self.relation_to_idx[q_rel],
+                        self.entity_to_idx[q_entity_str],
+                        i,
                     ]
                 )
 
-        entity_embeddings = torch.stack(entity_embeddings).to(self.device)
-        relation_embeddings = torch.stack(relation_embeddings).to(self.device)
-        edge_index = (
-            torch.tensor(edge_index, dtype=torch.long, device=self.device)
+        edge_idx = (
+            torch.tensor(edge_idx, dtype=torch.long, device=self.device)
             .t()
             .contiguous()
         ).to(self.device)
@@ -302,26 +262,43 @@ class GNN(torch.nn.Module):
             .contiguous()
             .to(self.device)
         )
+
+        edge_idx_inv = (
+            torch.tensor(edge_idx_inv, dtype=torch.long, device=self.device)
+            .t()
+            .contiguous()
+        ).to(self.device)
+        edge_type_inv = (
+            torch.tensor(edge_type_inv, dtype=torch.long, device=self.device)
+            .t()
+            .contiguous()
+        ).to(self.device)
+        quals_inv = (
+            torch.tensor(quals_inv, dtype=torch.long, device=self.device)
+            .t()
+            .contiguous()
+            .to(self.device)
+        )
+
         short_memory_idx = torch.tensor(short_memory_idx, dtype=torch.long).to(
             self.device
         )
-        agent_entity_index = torch.tensor(agent_entity_index, dtype=torch.long).to(
+        agent_entity_idx = torch.tensor(agent_entity_idx, dtype=torch.long).to(
             self.device
         )
 
         return (
-            entity_embeddings,
-            relation_embeddings,
-            edge_index,
+            edge_idx,
             edge_type,
             quals,
+            edge_idx_inv,
+            edge_type_inv,
+            quals_inv,
             short_memory_idx,
-            agent_entity_index,
-            num_short_memories,
+            agent_entity_idx,
         )
 
     def process_batch(self, data: np.ndarray) -> tuple[
-        torch.Tensor,
         torch.Tensor,
         torch.Tensor,
         torch.Tensor,
@@ -340,90 +317,87 @@ class GNN(torch.nn.Module):
                 entity embeddings and edge index.
 
         Returns:
-            entity_embeddings: The shape is [num_entities in a batch, emb_dim]
-            relation_embeddings: The shape is [num_relations in a batch * 2, emb_dim]
-            edge_index: The shape is [2, num_quadruples in a batch]
-            edge_type: The shape is [num_quadruples in a batch]
-            quals: The shape is [3, number of qualifier key-value pairs in batch]
-            short_memory_idx: [number of short-term memories]
-            agent_entity_index: [number of agent-nodes]
-            num_short_memories: The number of short-term memories
+            edge_idx: The shape is [2, num_quadruples]
+            edge_type: The shape is [num_quadruples]
+            quals: The shape is [3, number of qualifier key-value pairs]
+
+            edge_idx_inv: The shape is [2, num_quadruples]
+            edge_type_inv: The shape is [num_quadruples]
+            quals_inv: The shape is [3, number of qualifier key-value pairs]
+
+            short_memory_idx: The shape is [number of short-term memories]
+                the idx indexes `edge_idx` and `edge_type`
+            agent_entity_idx: The shape is [num batches]
+                the idx indexes `entity_embeddings`
+
+            num_short_memories: The number of short-term memories in each sample
 
         """
-        entity_embeddings = []
-        relation_embeddings = []
-        edge_index = []
+        edge_idx = []
         edge_type = []
         quals = []
+
+        edge_idx_inv = []
+        edge_type_inv = []
+        quals_inv = []
+
         short_memory_idx = []
-        agent_entity_index = []
+        agent_entity_idx = []
+
         num_short_memories = []
 
-        total_entities = 0
-        total_relations = 0
         total_edges = 0
+        total_edges_inv = 0
 
         for sample in data:
             (
-                entity_embeddings_,
-                relation_embeddings_,
-                edge_index_,
+                edge_idx_,
                 edge_type_,
                 quals_,
+                edge_idx_inv_,
+                edge_type_inv_,
+                quals_inv_,
                 short_memory_idx_,
-                agent_entity_index_,
-                num_short_memories_,
+                agent_entity_idx_,
             ) = self.process_sample(sample)
 
-            entity_embeddings.append(entity_embeddings_)
-            relation_embeddings.append(relation_embeddings_)
+            edge_idx.append(edge_idx_)
+            edge_idx_inv.append(edge_idx_inv_)
 
-            # Increment edge indices by the number of entities in previous samples
-            edge_index_ = edge_index_ + total_entities
-            edge_index.append(edge_index_)
-
-            # Increment edge types by the number of relations in previous samples
-            edge_type_ = edge_type_ + total_relations
             edge_type.append(edge_type_)
+            edge_type_inv.append(edge_type_inv_)
 
-            # Increment quals by the number of entities, relations, and edges in previous
-            # samples
-            quals_ = quals_ + torch.tensor(
-                [[total_relations], [total_entities], [total_edges]]
-            )
-            quals.append(quals_)
+            # Increment quals by the number of edges in previous samples
+            quals.append(quals_ + torch.tensor([[0], [0], [total_edges]]))
+            quals_inv.append(quals_inv_ + torch.tensor([[0], [0], [total_edges_inv]]))
 
             # Increment short_memory_idx by the number of edges in previous samples
-            short_memory_idx_ = short_memory_idx_ + total_edges
-            short_memory_idx.append(short_memory_idx_)
+            short_memory_idx.append(short_memory_idx_ + total_edges)
 
-            # Increment agent_entity_index by the number of entities in previous samples
-            agent_entity_index_ = agent_entity_index_ + total_entities
-            agent_entity_index.append(agent_entity_index_)
+            agent_entity_idx.append(agent_entity_idx_)
 
-            total_entities += entity_embeddings_.size(0)
-            total_relations += relation_embeddings_.size(0)
-            total_edges += edge_index_.size(1)
+            num_short_memories.append(short_memory_idx_.size(0))
 
-            num_short_memories.append(num_short_memories_)
+            total_edges += edge_idx_.size(1)
+            total_edges_inv += edge_idx_inv_.size(1)
 
-        entity_embeddings = torch.cat(entity_embeddings, dim=0)
-        relation_embeddings = torch.cat(relation_embeddings, dim=0)
-        edge_index = torch.cat(edge_index, dim=1)
-        edge_type = torch.cat(edge_type, dim=0)
-        quals = torch.cat(quals, dim=1)
+        edge_idx = torch.cat(edge_idx + edge_idx_inv, dim=1)
+        edge_type = torch.cat(edge_type + edge_type_inv, dim=0)
+        quals = torch.cat(quals + quals_inv, dim=1)
+
         short_memory_idx = torch.cat(short_memory_idx, dim=0)
-        agent_entity_index = torch.tensor(agent_entity_index)
-        num_short_memories = torch.tensor(num_short_memories)
+        agent_entity_idx = torch.tensor(agent_entity_idx)
+
+        num_short_memories = torch.tensor(num_short_memories, dtype=torch.long).to(
+            self.device
+        )
 
         return (
-            entity_embeddings,
-            relation_embeddings,
-            edge_index,
+            edge_idx,
             edge_type,
             quals,
             short_memory_idx,
-            agent_entity_index,
+            agent_entity_idx,
             num_short_memories,
         )
 
@@ -431,16 +405,6 @@ class GNN(torch.nn.Module):
         self, data: np.ndarray, policy_type: Literal["mm", "explore"]
     ) -> list[torch.Tensor]:
         """Forward pass of the GNN model.
-
-        `batch = next(iter(loader))` creates a `DataBatch` object that looks like this:
-
-        DataBatch(x=[num_entities_in_batch, 8], edge_index=[2, num_edges_in_batch],
-        short_triples=[batch_size], agent_node=[batch_size],
-        batch=[num_entities_in_batch], ptr=[batch_size +1])
-
-        The batching is done by incrementing the `ptr` array. The `ptr` array is used to
-        index the `x` array. The `short_triples` array is
-
 
         Args:
             data: The input data as a batch.
@@ -454,37 +418,28 @@ class GNN(torch.nn.Module):
 
         """
         (
-            entity_embeddings,
-            relation_embeddings,
-            edge_index,
+            edge_idx,
             edge_type,
             quals,
             short_memory_idx,
-            agent_entity_index,
+            agent_entity_idx,
             num_short_memories,
         ) = self.process_batch(data)
 
-        entity_embeddings = torch.load("entity_embeddings.pt")
-        relation_embeddings = torch.load("relation_embeddings.pt")
-        edge_index = torch.load("edge_index.pt")
-        edge_type = torch.load("edge_type.pt")
-        quals = torch.load("quals.pt")
-        short_memory_idx = torch.load("short_memory_idx.pt")
-        agent_entity_index = torch.load("agent_entity_index.pt")
-        num_short_memories = torch.load("num_short_memories.pt")
-
+        entity_embeddings = self.entity_embeddings
+        relation_embeddings = self.relation_embeddings
 
         for layer_ in self.gcn_layers:
             if "stare" in self.gcn_type:
                 entity_embeddings, relation_embeddings = layer_(
                     entity_embeddings=entity_embeddings,
                     relation_embeddings=relation_embeddings,
-                    edge_index=edge_index,
+                    edge_idx=edge_idx,
                     edge_type=edge_type,
                     quals=quals,
                 )
             elif "vanilla" in self.gcn_type:
-                entity_embeddings = layer_(entity_embeddings, edge_index)
+                entity_embeddings = layer_(entity_embeddings, edge_idx)
             else:
                 raise ValueError(f"{self.gcn_type} is not a valid GNN type.")
 
@@ -499,9 +454,9 @@ class GNN(torch.nn.Module):
             for idx in short_memory_idx:
                 triple_ = torch.cat(
                     [
-                        entity_embeddings[edge_index[0, idx]],
+                        entity_embeddings[edge_idx[0, idx]],
                         relation_embeddings[edge_type[idx]],
-                        entity_embeddings[edge_index[1, idx]],
+                        entity_embeddings[edge_idx[1, idx]],
                     ],
                     dim=0,
                 )
@@ -523,7 +478,7 @@ class GNN(torch.nn.Module):
 
         elif policy_type == "explore":
             node = []
-            for idx in agent_entity_index:
+            for idx in agent_entity_idx:
                 node_ = entity_embeddings[idx]
                 node.append(node_)
 

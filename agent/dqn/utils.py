@@ -269,6 +269,7 @@ def plot_results(
         plt.plot(training_loss["total"], label="total")
         plt.plot(training_loss["mm"], label="mm")
         plt.plot(training_loss["explore"], label="explore")
+        plt.yscale('log')  # Set y-axis to log scale
         plt.xlabel("update counts")
         plt.legend(loc="upper left")
 
