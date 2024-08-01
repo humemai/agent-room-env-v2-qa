@@ -761,8 +761,8 @@ def select_action(
     Returns:
         selected_actions: dimension is [num_actions_taken] for "explore" and scalar for
             "mm"
-        q_values: dimension is [num_actions_taken, action_space_dim] for "explore" and
-            [action_space_dim] for "mm"
+        q_values: dimension is [num_actions_taken, action_space_dim] for "mm" and
+            [action_space_dim] for "explore"
 
     """
     # Since dqn requires a batch dimension, we need to encapsulate the state in a list

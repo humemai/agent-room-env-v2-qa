@@ -62,10 +62,16 @@ class DQNAgent:
         pretrain_semantic: Literal[False, "include_walls", "exclude_walls"] = False,
         semantic_decay_factor: float = 1.0,
         dqn_params: dict = {
-            "embedding_dim": 8,
-            "num_layers_GNN": 2,
-            "num_hidden_layers_MLP": 1,
-            "dueling_dqn": True,
+            "gcn_layer_params": {
+                "type": "StarE",
+                "embedding_dim": 8,
+                "num_layers": 2,
+                "gcn_drop": 0.1,
+                "triple_qual_weight": 0.8,
+            },
+            "relu_between_gcn_layers": True,
+            "dropout_between_gcn_layers": True,
+            "mlp_params": {"num_hidden_layers": 2, "dueling_dqn": True},
         },
         num_samples_for_results: dict = {"val": 5, "test": 10},
         validation_interval: int = 5,
@@ -185,8 +191,16 @@ class DQNAgent:
         self.dqn_params["entities"] = [
             e for entities in self.env.unwrapped.entities.values() for e in entities
         ]
+        # We are gonna treat the real numbers 0, 1, ..., 100 as entities. This is
+        # very stupid, but it is what it is.
+        self.dqn_params["entities"] += [
+            str(i) for i in range(self.env.unwrapped.terminates_at + 2)
+        ]
+        # Main triple relations have "inv", while qualifier relations don't have "inv".
         self.dqn_params["relations"] = (
-            self.env.unwrapped.relations + self.memory_systems.qualifier_relations
+            self.env.unwrapped.relations
+            + [rel + "_inv" for rel in self.env.unwrapped.relations]
+            + self.memory_systems.qualifier_relations
         )
         self.dqn = GNN(**self.dqn_params)
         self.dqn_target = GNN(**self.dqn_params)
@@ -213,17 +227,13 @@ class DQNAgent:
         write_yaml(
             {
                 "total": sum(p.numel() for p in self.dqn.parameters()),
-                "gnn": sum(p.numel() for p in self.dqn.gnn.parameters()),
+                "gcn_layers": sum(p.numel() for p in self.dqn.gcn_layers.parameters()),
                 "mlp_mm": sum(p.numel() for p in self.dqn.mlp_mm.parameters()),
                 "mlp_explore": sum(
                     p.numel() for p in self.dqn.mlp_explore.parameters()
                 ),
-                "entity_embeddings": sum(
-                    p.numel() for p in self.dqn.entity_embeddings.parameters()
-                ),
-                "relation_embeddings": sum(
-                    p.numel() for p in self.dqn.relation_embeddings.parameters()
-                ),
+                "entity_embeddings": self.dqn.entity_embeddings.numel(),
+                "relation_embeddings": self.dqn.relation_embeddings.numel(),
             },
             os.path.join(self.default_root_dir, "num_params.yaml"),
         )
@@ -328,7 +338,9 @@ class DQNAgent:
         )
 
         # the dimension of a_mm is [num_actions_taken]
-        assert len(a_mm) == self.memory_systems.short.size
+        assert (
+            len(a_mm) == self.memory_systems.short.size
+        ), f"{len(a_mm)} should be {self.memory_systems.short.size}"
         for a_mm_, mem_short in zip(a_mm, self.memory_systems.short):
             manage_memory(self.memory_systems, self.action_mm2str[a_mm_], mem_short)
 
