@@ -125,7 +125,7 @@ def explore(
 
 def manage_memory(
     memory_systems: MemorySystems,
-    policy: Literal["episodic", "semantic", "random", "forget"],
+    policy: Literal["episodic", "semantic", "random", "forget", "handcrafted"],
     mem_short: list,
 ) -> None:
     """Non RL memory management policy. This function directly manages the long-term
@@ -134,11 +134,11 @@ def manage_memory(
 
     Args:
         MemorySystems
-        policy: "episodic", "semantic", "random", or "forget"
+        policy: "episodic", "semantic", "random", "forget", or "handcrafted"
         mem_short: a short-term memory to be moved into a long-term memory.
 
     """
-    assert policy.lower() in ["episodic", "semantic", "random", "forget"]
+    assert policy.lower() in ["episodic", "semantic", "random", "forget", "handcrafted"]
     assert memory_systems.short.has_memory(mem_short)
     assert not memory_systems.short.is_empty
 
@@ -157,7 +157,7 @@ def manage_memory(
             else:
                 memory_systems.long.forget_by_selection("weakest")
 
-    if policy.lower() == "episodic":
+    def move_to_episodic(memory_systems: MemorySystems, mem_short: list) -> None:
         mem_epi = ShortMemory.short2epi(mem_short)
         check, error_msg = memory_systems.long.can_be_added(mem_epi)
         if check:
@@ -169,7 +169,7 @@ def manage_memory(
             else:
                 raise ValueError(error_msg)
 
-    elif policy.lower() == "semantic":
+    def move_to_semantic(memory_systems: MemorySystems, mem_short: list) -> None:
         mem_sem = ShortMemory.short2sem(mem_short)
         check, error_msg = memory_systems.long.can_be_added(mem_sem)
         if check:
@@ -181,29 +181,31 @@ def manage_memory(
             else:
                 raise ValueError(error_msg)
 
+    if policy.lower() == "episodic":
+        move_to_episodic(memory_systems, mem_short)
+
+    elif policy.lower() == "semantic":
+        move_to_semantic(memory_systems, mem_short)
+
     elif policy.lower() == "random":
         if random.choice(["episodic", "semantic"]) == "episodic":
-            mem_epi = ShortMemory.short2epi(mem_short)
-            check, error_msg = memory_systems.long.can_be_added(mem_epi)
-            if check:
-                memory_systems.long.add(mem_epi)
-            else:
-                if error_msg == "The memory system is full!":
-                    forget_long_when_full(memory_systems)
-                    memory_systems.long.add(mem_epi)
-                else:
-                    raise ValueError(error_msg)
+            move_to_episodic(memory_systems, mem_short)
         else:
-            mem_sem = ShortMemory.short2sem(mem_short)
-            check, error_msg = memory_systems.long.can_be_added(mem_sem)
-            if check:
-                memory_systems.long.add(mem_sem)
-            else:
-                if error_msg == "The memory system is full!":
-                    forget_long_when_full(memory_systems)
-                    memory_systems.long.add(mem_sem)
-                else:
-                    raise ValueError(error_msg)
+            move_to_semantic(memory_systems, mem_short)
+
+    elif policy.lower() == "handcrafted":
+        if mem_short[0] == "agent":
+            move_to_episodic(memory_systems, mem_short)
+        elif "ind" in mem_short[0] or "dep" in mem_short[0]:
+            move_to_episodic(memory_systems, mem_short)
+        elif "sta" in mem_short[0]:
+            move_to_semantic(memory_systems, mem_short)
+        elif "room" in mem_short[0] and "room" in mem_short[2]:
+            move_to_semantic(memory_systems, mem_short)
+        elif "wall" in mem_short[2]:
+            pass
+        else:
+            raise ValueError("something is wrong")
 
     elif policy.lower() == "forget":
         pass

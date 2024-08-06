@@ -36,7 +36,7 @@ class HandcraftedAgent:
             "question_interval": 1,
             "room_size": "xxs",
         },
-        mm_policy: Literal["random", "episodic", "semantic"] = "random",
+        mm_policy: Literal["random", "episodic", "semantic", "handcrafted"] = "random",
         qa_function: Literal[
             "latest_strongest", "latest", "strongest", "random"
         ] = "latest_strongest",
@@ -56,7 +56,7 @@ class HandcraftedAgent:
             env_str: This has to be "room_env:RoomEnv-v2"
             env_config: The configuration of the environment.
             mm_policy: memory management policy. Choose one of "random", "episodic",
-                "semantic", or "generalize"
+                "semantic", or "handcrafted"
             qa_function: The question answering policy. Choose one of
                 "episodic_semantic", "episodic", "semantic", or "random"
             explore_policy: The room exploration policy. Choose one of "random",
@@ -78,6 +78,7 @@ class HandcraftedAgent:
             "random",
             "episodic",
             "semantic",
+            "handcrafted",
         ]
         self.qa_function = qa_function
         assert self.qa_function in [
@@ -185,14 +186,14 @@ class HandcraftedAgent:
                     observations, info = self.env.reset()
                     env_started = True
 
-                # 1. Encode the observations as short-term memory
+                # 0. Encode the observations as short-term memory
                 encode_all_observations(self.memory_systems, observations["room"])
 
-                # 2. explore the room
+                # 1. explore the room
                 action_explore = explore(self.memory_systems, self.explore_policy)
 
                 working_memory = self.memory_systems.get_working_memory()
-                # 3. Answer the questions
+                # 2. Answer the questions
                 answers = [
                     str(
                         answer_question(
@@ -204,7 +205,7 @@ class HandcraftedAgent:
                     for question in observations["questions"]
                 ]
 
-                # 4. Manage the memory
+                # 3. Manage the memory
                 for mem_short in self.memory_systems.short:
                     manage_memory(self.memory_systems, self.mm_policy, mem_short)
 

@@ -55,6 +55,7 @@ class DQNAgent:
         max_epsilon: float = 1.0,
         min_epsilon: float = 0.1,
         gamma: float = 0.9,
+        learning_rate: int = 0.001,
         capacity: dict = {
             "long": 12,
             "short": 15,
@@ -91,6 +92,7 @@ class DQNAgent:
             "question_interval": 1,
             "include_walls_in_observations": True,
         },
+        intrinsic_reward: float = 1.0,
         ddqn: bool = True,
         default_root_dir: str = "./training-results/",
     ) -> None:
@@ -108,6 +110,7 @@ class DQNAgent:
             max_epsilon: maximum epsilon
             min_epsilon: minimum epsilon
             gamma: discount factor
+            learning_rate: learning rate for the optimizer
             capacity: The capacity of each human-like memory systems
             pretrain_semantic: whether to pretrain the semantic memory system.
             semantic_decay_factor: decay factor for the semantic memory system
@@ -128,6 +131,7 @@ class DQNAgent:
                 seed: seed for env
                 room_size: The room configuration to use. Choose one of "dev", "xxs",
                     "xs", "s", "m", or "l".
+            intrinsic_reward: intrinsic reward for exploration
             ddqn: whether to use double DQN
             default_root_dir: default root directory to save results
 
@@ -157,6 +161,7 @@ class DQNAgent:
         self.device = torch.device(device)
         print(f"Running on {self.device}")
 
+        self.intrinsic_reward = intrinsic_reward
         self.ddqn = ddqn
         self.val_file_names = []
         self.is_notebook = is_running_notebook()
@@ -172,6 +177,7 @@ class DQNAgent:
         self.epsilon_decay_until = epsilon_decay_until
         self.target_update_interval = target_update_interval
         self.gamma = gamma
+        self.learning_rate = learning_rate
         self.warm_start = warm_start
         assert self.batch_size <= self.warm_start <= self.replay_buffer_size
 
@@ -208,7 +214,7 @@ class DQNAgent:
         self.dqn_target.eval()
 
         # optimizer
-        self.optimizer = optim.Adam(list(self.dqn.parameters()))
+        self.optimizer = optim.Adam(list(self.dqn.parameters()), lr=self.learning_rate)
 
         self.q_values = {
             "train": {"mm": [], "explore": []},
@@ -329,7 +335,7 @@ class DQNAgent:
         ]
 
         # 3. manage memory
-        a_mm, q_mm = select_action(  # the dimension of a_mm is [num_actions_taken]
+        a_mm, q_mm = select_action(
             state=working_memory.to_list(),
             greedy=greedy,
             dqn=self.dqn,
@@ -341,6 +347,7 @@ class DQNAgent:
         assert (
             len(a_mm) == self.memory_systems.short.size
         ), f"{len(a_mm)} should be {self.memory_systems.short.size}"
+
         for a_mm_, mem_short in zip(a_mm, self.memory_systems.short):
             manage_memory(self.memory_systems, self.action_mm2str[a_mm_], mem_short)
 
@@ -366,6 +373,30 @@ class DQNAgent:
             done,
         )
 
+    def get_intrinsic_actions(self, working_memory: Memory) -> list:
+        r"""Get intrinsic actions for the current working memory.
+
+        Args:
+            working_memory: current working memory
+
+        Returns:
+            intrinsic_actions: intrinsic actions
+
+        """
+        intrinsic_actions = []
+        for mem in working_memory:
+            if (
+                "room" in mem[0]
+                and mem[1] in ["north", "east", "south", "west"]
+                and "wall" not in mem[2]
+                and "current_time" in mem[3]
+            ):
+                intrinsic_actions.append(mem[1])
+
+        assert len(intrinsic_actions) > 0, "No intrinsic actions found."
+
+        return intrinsic_actions
+
     def fill_replay_buffer(self) -> None:
         r"""Make the replay buffer full in the beginning with the uniformly-sampled
         actions. The filling continues until it reaches the warm start size.
@@ -382,6 +413,7 @@ class DQNAgent:
                 done = False
             else:
                 working_memory = self.memory_systems.get_working_memory()
+                intrinsic_actions = self.get_intrinsic_actions(working_memory)
                 state = deepcopy(working_memory.to_list())
                 (
                     observations,
@@ -393,11 +425,23 @@ class DQNAgent:
                     answers,
                     done,
                 ) = self.step(working_memory, observations["questions"], greedy=False)
+                if a_explore in intrinsic_actions:
+                    intrinsic_reward_explore = self.intrinsic_reward
                 encode_all_observations(self.memory_systems, observations["room"])
                 working_memory = self.memory_systems.get_working_memory()
                 next_state = deepcopy(working_memory.to_list())
+                scaled_reward = reward / self.env.unwrapped.num_questions_step
+                assert scaled_reward <= 1
                 self.replay_buffer.store(
-                    *[state, a_explore, a_mm, reward, next_state, done]
+                    *[
+                        state,
+                        a_explore,
+                        a_mm,
+                        scaled_reward + intrinsic_reward_explore,
+                        scaled_reward,
+                        next_state,
+                        done,
+                    ]
                 )
 
     def train(self) -> None:
@@ -443,9 +487,21 @@ class DQNAgent:
                 encode_all_observations(self.memory_systems, observations["room"])
                 working_memory = self.memory_systems.get_working_memory()
                 next_state = deepcopy(working_memory.to_list())
+                scaled_reward = reward / self.env.unwrapped.num_questions_step
+                assert scaled_reward <= 1
+                intrinsic_reward = self.calculate_intrinsic_reward(state, next_state)
                 self.replay_buffer.store(
-                    *[state, a_explore, a_mm, reward, next_state, done]
+                    *[
+                        state,
+                        a_explore,
+                        a_mm,
+                        scaled_reward + intrinsic_reward,
+                        scaled_reward,
+                        next_state,
+                        done,
+                    ]
                 )
+
                 self.q_values["train"]["explore"].append(q_explore)
                 self.q_values["train"]["mm"].append(q_mm)
                 score += reward
@@ -551,6 +607,7 @@ class DQNAgent:
                         working_memory, observations["questions"], greedy=True
                     )
                     encode_all_observations(self.memory_systems, observations["room"])
+
                     score += reward
 
                     if idx == self.num_samples_for_results[val_or_test] - 1:

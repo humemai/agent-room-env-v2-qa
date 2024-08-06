@@ -3,7 +3,6 @@
 import os
 from typing import Literal
 import random
-import shutil
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -35,8 +34,10 @@ class ReplayBuffer:
             array of None values of dtype=object.
         acts_mm_buf (np.ndarray): Buffer for mm actions, initialized as an array of None
             values of dtype=object.
-        rews_buf (np.ndarray): Buffer for rewards, initialized as an array of zeros
-            of dtype=np.float32.
+        rews_explore_buf (np.ndarray): Buffer for rewards, initialized as an array of 
+            zeros of dtype=np.float32.
+        rews_mm_buf (np.ndarray): Buffer for rewards, initialized similarly to 
+            rews_explore_buf.
         done_buf (np.ndarray): Buffer for done flags, initialized as an array of zeros
             of dtype=np.float32.
         max_size (int): Maximum size of the buffer.
@@ -58,14 +59,16 @@ class ReplayBuffer:
         next_obs = {str(i): str(random.randint(0, 10)) for i in range(3)}
         action_explore = random.randint(0, 4)
         action_mm = [random.randint(0, 3) for _ in range(random.randint(1, 10))]
-        reward = random.randint(0, 1)
+        reward_explore = random.randint(0, 1)
+        reward_mm = random.randint(0, 1)
         done = random.choice([False, True])
         buffer.store(
             *[
                 obs,
                 action_explore,
                 action_mm,
-                reward,
+                reward_explore,
+                reward_mm,
                 next_obs,
                 done,
             ]
@@ -84,7 +87,8 @@ class ReplayBuffer:
     'acts_mm': array([list([2, 0, 2, 1, 3]), list([0, 1, 2]),
             list([0, 1, 3, 1, 1, 2, 2]), list([0, 1, 2, 3, 4, 5, 6, 7, 8, 9])],
         dtype=object),
-    'rews': array([0., 1., 1., 0.], dtype=float32),
+    'rews_explore': array([0., 1., 1., 0.], dtype=float32),
+    'rews_mm': array([0., 1., 1., 0.], dtype=float32),
     'done': array([1., 0., 1., 1.], dtype=float32)}
 
     >>> sample["acts_mm"].shape
@@ -120,7 +124,8 @@ class ReplayBuffer:
         self.next_obs_buf = np.array([None] * size, dtype=object)
         self.acts_explore_buf = np.zeros([size], dtype=int)
         self.acts_mm_buf = np.array([None] * size, dtype=object)
-        self.rews_buf = np.zeros([size], dtype=np.float32)
+        self.rews_explore_buf = np.zeros([size], dtype=np.float32)
+        self.rews_mm_buf = np.zeros([size], dtype=np.float32)
         self.done_buf = np.zeros(size, dtype=np.float32)
         self.max_size, self.batch_size = size, batch_size
         (
@@ -136,7 +141,8 @@ class ReplayBuffer:
         obs: np.ndarray,
         act_explore: np.ndarray,
         act_mm: np.ndarray,
-        rew: float,
+        rew_explore: float,
+        rew_mm: float,
         next_obs: np.ndarray,
         done: bool,
     ) -> None:
@@ -146,7 +152,8 @@ class ReplayBuffer:
             obs: observation
             act_explore: explore action
             act_mm: memory management action
-            rew: reward
+            rew_explore: reward for explore
+            rew_mm: reward for memory management
             next_obs: next observation
             done: done
 
@@ -155,7 +162,8 @@ class ReplayBuffer:
         self.next_obs_buf[self.ptr] = next_obs
         self.acts_explore_buf[self.ptr] = act_explore
         self.acts_mm_buf[self.ptr] = act_mm
-        self.rews_buf[self.ptr] = rew
+        self.rews_explore_buf[self.ptr] = rew_explore
+        self.rews_mm_buf[self.ptr] = rew_mm
         self.done_buf[self.ptr] = done
         self.ptr = (self.ptr + 1) % self.max_size
         self.size = min(self.size + 1, self.max_size)
@@ -169,7 +177,8 @@ class ReplayBuffer:
                 next_obs: np.ndarray,
                 acts_explore: np.ndarray,
                 acts_mm: np.ndarray,
-                rews: np.ndarray,
+                rews_explore: np.ndarray,
+                rews_mm: np.ndarray,
                 done: np.ndarray
 
         """
@@ -179,7 +188,8 @@ class ReplayBuffer:
             next_obs=self.next_obs_buf[idxs],
             acts_explore=self.acts_explore_buf[idxs],
             acts_mm=self.acts_mm_buf[idxs],
-            rews=self.rews_buf[idxs],
+            rews_explore=self.rews_explore_buf[idxs],
+            rews_mm=self.rews_mm_buf[idxs],
             done=self.done_buf[idxs],
         )
 
@@ -265,11 +275,11 @@ def plot_results(
         plt.legend(loc="upper left")
 
         plt.subplot(331)
-        plt.title("training td loss")
+        plt.title("training td loss (log scale)")
         plt.plot(training_loss["total"], label="total")
         plt.plot(training_loss["mm"], label="mm")
         plt.plot(training_loss["explore"], label="explore")
-        plt.yscale('log')  # Set y-axis to log scale
+        plt.yscale("log")  # Set y-axis to log scale
         plt.xlabel("update counts")
         plt.legend(loc="upper left")
 
@@ -706,14 +716,14 @@ def update_model(
     batch_mm = {
         "obs": batch["obs"],
         "acts": batch["acts_mm"],
-        "rews": batch["rews"],
+        "rews": batch["rews_mm"],
         "next_obs": batch["next_obs"],
         "done": batch["done"],
     }
     batch_explore = {
         "obs": batch["obs"],
         "acts": batch["acts_explore"],
-        "rews": batch["rews"],
+        "rews": batch["rews_explore"],
         "next_obs": batch["next_obs"],
         "done": batch["done"],
     }
