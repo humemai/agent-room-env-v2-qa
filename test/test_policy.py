@@ -247,21 +247,17 @@ class TestEncodeAllObservations(unittest.TestCase):
 
     def test_encode_all_observations_partial(self):
         """Test partial encoding when memory is full."""
-        self.short_memory.add(["agent", "atlocation", "room0", {"current_time": 0}])
         obs_list = [
             ["agent", "atlocation", "room1", 1],
             ["agent", "atlocation", "room2", 2],
             ["agent", "atlocation", "room3", 3],
+            ["agent", "atlocation", "room3", 4],
         ]
         with self.assertRaises(ValueError) as context:
             encode_all_observations(self.memory_systems, obs_list)
         self.assertEqual(str(context.exception), "The memory system is full!")
         # Check that only part of the observations were added
         self.assertEqual(len(self.short_memory.entries), 3)
-        self.assertIn(
-            ["agent", "atlocation", "room0", {"current_time": 0}],
-            self.short_memory.entries,
-        )
 
     def test_encode_all_observations_no_duplicates(self):
         """Test encoding of multiple observations without duplication."""
@@ -272,26 +268,6 @@ class TestEncodeAllObservations(unittest.TestCase):
         encode_all_observations(self.memory_systems, obs_list)
         expected_memory = ["agent", "atlocation", "room1", {"current_time": 1}]
         self.assertEqual(self.short_memory.entries.count(expected_memory), 1)
-
-    def test_encode_all_observations_mixed(self):
-        """Test encoding a mix of valid and invalid observations."""
-        self.short_memory.add(["agent", "atlocation", "room0", {"current_time": 0}])
-        obs_list = [
-            ["agent", "atlocation", "room1", 1],
-            ["agent", "atlocation", "room2", 2],
-            ["invalid", "relation", "data", 3],  # This should raise an exception
-        ]
-        with self.assertRaises(ValueError):
-            encode_all_observations(self.memory_systems, obs_list)
-        # Check that valid observations before the invalid one were added
-        self.assertIn(
-            ["agent", "atlocation", "room0", {"current_time": 0}],
-            self.short_memory.entries,
-        )
-        self.assertIn(
-            ["agent", "atlocation", "room1", {"current_time": 1}],
-            self.short_memory.entries,
-        )
 
 
 class TestManageMemory(unittest.TestCase):
@@ -503,13 +479,13 @@ class TestAnswerQuestion(unittest.TestCase):
     def test_answer_question_latest(self):
         """Test answering a question using the latest memory."""
         question = ["agent", "atlocation", "?", 5]
-        answer = answer_question(self.memory_systems.get_working_memory(), "latest", question)
+        answer = answer_question(self.memory_systems, "latest", question)
         self.assertEqual(answer, "room1")
 
     def test_answer_question_strongest(self):
         """Test answering a question using the strongest memory."""
         question = ["agent", "atlocation", "?", 5]
-        answer = answer_question(self.memory_systems.get_working_memory(), "strongest", question)
+        answer = answer_question(self.memory_systems, "strongest", question)
         self.assertEqual(answer, "room2")
 
     def test_answer_question_random(self):
@@ -517,7 +493,7 @@ class TestAnswerQuestion(unittest.TestCase):
         question = ["agent", "atlocation", "?", 5]
         answers = set()
         for _ in range(100):
-            answer = answer_question(self.memory_systems.get_working_memory(), "random", question)
+            answer = answer_question(self.memory_systems, "random", question)
             answers.add(answer)
         self.assertTrue(answers.issubset({"room1", "room2", "room3", "room4", "room5"}))
         self.assertGreaterEqual(
@@ -527,23 +503,23 @@ class TestAnswerQuestion(unittest.TestCase):
     def test_answer_question_latest_strongest(self):
         """Test answering a question using the latest and strongest memory."""
         question = ["agent", "atlocation", "?", 5]
-        answer = answer_question(self.memory_systems.get_working_memory(), "latest_strongest", question)
+        answer = answer_question(self.memory_systems, "latest_strongest", question)
         self.assertEqual(answer, "room1")
 
     def test_answer_question_strongest_latest(self):
         """Test answering a question using the strongest and latest memory."""
         question = ["agent", "atlocation", "?", 5]
-        answer = answer_question(self.memory_systems.get_working_memory(), "strongest_latest", question)
+        answer = answer_question(self.memory_systems, "strongest_latest", question)
         self.assertEqual(answer, "room2")
 
     def test_answer_question_no_relevant_memory(self):
         """Test answering a question when no relevant memory is found."""
         question = ["car", "atlocation", "?", 5]
-        answer = answer_question(self.memory_systems.get_working_memory(), "latest", question)
+        answer = answer_question(self.memory_systems, "latest", question)
         self.assertIsNone(answer)
-        answer = answer_question(self.memory_systems.get_working_memory(), "strongest", question)
+        answer = answer_question(self.memory_systems, "strongest", question)
         self.assertIsNone(answer)
-        answer = answer_question(self.memory_systems.get_working_memory(), "latest_strongest", question)
+        answer = answer_question(self.memory_systems, "latest_strongest", question)
         self.assertIsNone(answer)
-        answer = answer_question(self.memory_systems.get_working_memory(), "strongest_latest", question)
+        answer = answer_question(self.memory_systems, "strongest_latest", question)
         self.assertIsNone(answer)

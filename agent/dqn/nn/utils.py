@@ -1,5 +1,6 @@
 """A lot copied from https://github.com/migalkin/StarE"""
 
+import numpy as np
 import torch
 import torch_scatter
 from torch_scatter import scatter_add, scatter_max
@@ -101,3 +102,158 @@ def scatter_(name, src, index, dim_size=None) -> torch.Tensor:
         out[out == fill_value] = 0
 
     return out
+
+
+def extract_entities_and_relations(sample: list[list]) -> tuple[list[str], list[str]]:
+    r"""Extract entities and relations from a sample.
+
+    Args:
+        sample: A list of quadruples: (head, relation, tail, qualifiers).
+
+    Returns:
+        entities: A list of entities.
+        relations: A list of relations.
+
+    """
+    entities = set()
+    relations = set()
+    for quadruple in sample:
+        head, relation, tail, quals = quadruple
+        entities.add(head)
+        entities.add(tail)
+        relations.add(relation)
+        relations.add(relation + "_inv")
+        for q_rel, q_entity in quals.items():
+            relations.add(q_rel)
+            if isinstance(q_entity, list):
+                entities.add(str(max(q_entity)))
+            else:
+                entities.add(str(round(q_entity)))
+
+    entities = sorted(list(entities), reverse=True)
+    relations = sorted(list(relations), reverse=True)
+
+    return entities, relations
+
+
+def process_graph(
+    sample: list[list],
+) -> tuple[
+    list,
+    list,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    int,
+]:
+    r"""Process a sample in a batch. All the indexes are local to the sample. When you
+    batch multiple samples, you need to offset some of the indexes to make them global.
+
+    Args:
+        graph: A list of quadruples: (head, relation, tail, qualifiers).
+
+        [['dep_007', 'atlocation', 'room_000', {'current_time': 2, 'strength': 1}],
+        ['agent', 'atlocation', 'room_000', {'current_time': 2, 'strength': 1}],
+        ['room_000', 'west', 'wall', {'current_time': 2, 'strength': 1}],
+        ['room_000', 'north', 'wall', {'current_time': 2, 'strength': 1.8}],
+        ['dep_001',
+        'atlocation',
+        'room_000',
+        {'current_time': 2, 'timestamp': [0, 1]}],
+        ['room_000', 'south', 'room_004', {'current_time': 2, 'timestamp': [1]}],
+        ['room_000',
+        'east',
+        'room_001',
+        {'current_time': 2, 'timestamp': [0], 'strength': 1}]]
+
+    Returns:
+        entities: The shape is [num_entities in the sample]
+        relations: The shape is [num_relations in the sample]
+        edge_idx: The shape is [2, num_quadruples]
+        edge_type: The shape is [num_quadruples]
+        quals: The shape is [3, number of qualifier key-value pairs]
+
+        edge_idx_inv: The shape is [2, num_quadruples]
+        edge_type_inv: The shape is [num_quadruples]
+        quals_inv: The shape is [3, number of qualifier key-value pairs]
+
+        short_memory_idx: The shape is [number of short-term memories]
+            the idx indexes `edge_idx` and `edge_type`
+        agent_entity_idx: One scalar value. the idx indexes `entity_embeddings`
+
+
+    """
+    entities, relations = extract_entities_and_relations(sample)
+    entity_to_idx = {entity: idx for idx, entity in enumerate(entities)}
+    relation_to_idx = {relation: idx for idx, relation in enumerate(relations)}
+
+    edge_idx = []
+    edge_type = []
+    quals = []
+
+    edge_idx_inv = []
+    edge_type_inv = []
+    quals_inv = []
+
+    short_memory_idx = []
+    agent_entity_idx = None
+
+    for i, quadruple in enumerate(sample):
+        head, relation, tail, qualifiers = quadruple
+
+        if head == "agent":
+            agent_entity_idx = entity_to_idx[head]
+
+        if tail == "agent":
+            agent_entity_idx = entity_to_idx[tail]
+
+        edge_idx.append([entity_to_idx[head], entity_to_idx[tail]])
+        edge_type.append(relation_to_idx[relation])
+
+        edge_idx_inv.append([entity_to_idx[tail], entity_to_idx[head]])
+        edge_type_inv.append(relation_to_idx[relation + "_inv"])
+
+        for q_rel, q_entity in qualifiers.items():
+
+            if q_rel == "timestamp":
+                q_entity_str = str(round(max(q_entity)))
+            elif q_rel == "current_time":
+                q_entity_str = str(round(q_entity))
+                short_memory_idx.append(i)
+            elif q_rel == "strength":
+                q_entity_str = str(round(q_entity))
+            else:
+                raise ValueError(f"Unknown qualifier: {q_rel}")
+
+            quals.append(
+                [
+                    relation_to_idx[q_rel],
+                    entity_to_idx[q_entity_str],
+                    i,
+                ]
+            )
+            quals_inv.append(
+                [
+                    relation_to_idx[q_rel],
+                    entity_to_idx[q_entity_str],
+                    i,
+                ]
+            )
+    if agent_entity_idx is None:
+        raise ValueError("No agent entity found in the sample")
+    return (
+        entities,
+        relations,
+        torch.tensor(edge_idx).T,
+        torch.tensor(edge_type),
+        torch.tensor(quals).T,
+        torch.tensor(edge_idx_inv).T,
+        torch.tensor(edge_type_inv),
+        torch.tensor(quals_inv).T,
+        torch.tensor(short_memory_idx),
+        agent_entity_idx,
+    )

@@ -34,9 +34,9 @@ class ReplayBuffer:
             array of None values of dtype=object.
         acts_mm_buf (np.ndarray): Buffer for mm actions, initialized as an array of None
             values of dtype=object.
-        rews_explore_buf (np.ndarray): Buffer for rewards, initialized as an array of 
+        rews_explore_buf (np.ndarray): Buffer for rewards, initialized as an array of
             zeros of dtype=np.float32.
-        rews_mm_buf (np.ndarray): Buffer for rewards, initialized similarly to 
+        rews_mm_buf (np.ndarray): Buffer for rewards, initialized similarly to
             rews_explore_buf.
         done_buf (np.ndarray): Buffer for done flags, initialized as an array of zeros
             of dtype=np.float32.
@@ -84,8 +84,8 @@ class ReplayBuffer:
             {'0': '1', '1': '7', '2': '1'}, {'0': '8', '1': '9', '2': '0'}],
         dtype=object),
     'acts_explore': array([4., 3., 2., 2.], dtype=float32),
-    'acts_mm': array([list([2, 0, 2, 1, 3]), list([0, 1, 2]),
-            list([0, 1, 3, 1, 1, 2, 2]), list([0, 1, 2, 3, 4, 5, 6, 7, 8, 9])],
+    'acts_mm': array([np.array([2, 0, 2, 1, 3]), np.array([0, 1, 2]),
+            np.array([0, 1, 3, 1, 1, 2, 2]), np.array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9])],
         dtype=object),
     'rews_explore': array([0., 1., 1., 0.], dtype=float32),
     'rews_mm': array([0., 1., 1., 0.], dtype=float32),
@@ -309,7 +309,7 @@ def plot_results(
             for action_number in range(5):
                 plt.plot(
                     [
-                        q_value_[action_number]
+                        q_value_[0][action_number]
                         for q_value_ in q_values[split]["explore"]
                     ],
                     label=action_explore2str[action_number],
@@ -570,9 +570,9 @@ def compute_loss_mm(
     """
     state = batch["obs"]
     state_next = batch["next_obs"]
-    action = batch["acts"]
-    reward = torch.FloatTensor(batch["rews"].reshape(-1, 1)).to(device)
-    done = torch.FloatTensor(batch["done"].reshape(-1, 1)).to(device)
+    action = [torch.LongTensor(s).reshape(-1, 1).to(device) for s in batch["acts"]]
+    reward = torch.FloatTensor(batch["rews"]).to(device)
+    done = torch.FloatTensor(batch["done"]).to(device)
 
     # Forward pass on current state to get Q-values
     q_value_current = dqn(state, policy_type="mm")
@@ -591,8 +591,9 @@ def compute_loss_mm(
     for idx in range(len(min_lens)):
         min_len = min_lens[idx]
 
-        action_ = torch.tensor(action[idx][:min_len]).reshape(-1, 1).to(device)
-        q_value_current_ = q_value_current[idx][:min_len].gather(1, action_)
+        action_ = action[idx][:min_len]
+        q_value_current_ = q_value_current[idx][:min_len]
+        q_value_current_chosen = q_value_current_.gather(1, action_)
         q_value_next_ = q_value_next[idx][:min_len]
 
         if ddqn:
@@ -600,19 +601,21 @@ def compute_loss_mm(
             # those actions
             q_value_for_action_ = q_value_for_action[idx][:min_len]
             action_next = q_value_for_action_.argmax(dim=1, keepdim=True)
-            q_value_next_ = q_value_next_.gather(1, action_next).detach()
+            q_value_next_chosen = q_value_next_.gather(1, action_next).detach()
         else:
             # Vanilla DQN: Use target DQN to get max Q-value for next state
-            q_value_next_ = q_value_next_.max(dim=1, keepdim=True)[0].detach()
+            q_value_next_chosen = q_value_next_.max(dim=1, keepdim=True)[0].detach()
 
         # Compute the target Q-values considering whether the state is terminal
-        q_value_target_ = reward[idx] + gamma * q_value_next_ * (1 - done[idx])
+        q_value_target_ = reward[idx] + gamma * q_value_next_chosen * (1 - done[idx])
 
-        q_value_current_batch.append(q_value_current_)
+        q_value_current_batch.append(q_value_current_chosen)
         q_value_target_batch.append(q_value_target_)
 
     q_value_current_batch = torch.concat(q_value_current_batch, dim=0)
     q_value_target_batch = torch.concat(q_value_target_batch, dim=0)
+
+    assert q_value_current_batch.shape == q_value_target_batch.shape
 
     # Calculate loss
     loss = F.smooth_l1_loss(q_value_current_batch, q_value_target_batch)
@@ -650,15 +653,16 @@ def compute_loss_explore(
         loss: TD loss for the explore policy
 
     """
+
     state = batch["obs"]
     state_next = batch["next_obs"]
-    action = batch["acts"]
-    action = torch.tensor([torch.tensor(a) for a in action]).reshape(-1, 1).to(device)
-    reward = torch.FloatTensor(batch["rews"].reshape(-1, 1)).to(device)
-    done = torch.FloatTensor(batch["done"].reshape(-1, 1)).to(device)
+    action = torch.LongTensor(batch["acts"].reshape(-1, 1)).to(device)
+    reward = torch.FloatTensor(batch["rews"]).reshape(-1, 1).to(device)
+    done = torch.FloatTensor(batch["done"]).reshape(-1, 1).to(device)
 
     # Forward pass on current state to get Q-values
     q_value_current = dqn(state, policy_type="explore")
+
     q_value_current = torch.concat(q_value_current)
     q_value_current = q_value_current.gather(1, action)
 
@@ -679,6 +683,8 @@ def compute_loss_explore(
     # Compute the target Q-values considering whether the state is terminal
     q_value_target = reward + gamma * q_value_next * (1 - done)
 
+    assert q_value_current.shape == q_value_target.shape
+
     # Calculate loss
     loss = F.smooth_l1_loss(q_value_current, q_value_target)
 
@@ -692,8 +698,7 @@ def update_model(
     dqn: torch.nn.Module,
     dqn_target: torch.nn.Module,
     ddqn: str,
-    gamma: float,
-    loss_weights: dict[str, int] = {"mm": 1, "explore": 1},
+    gamma: dict[str, float],
 ) -> tuple[float, float, float]:
     r"""Update the model by gradient descent.
 
@@ -705,7 +710,6 @@ def update_model(
         dqn_target: dqn target model
         ddqn: whether to use double dqn or not
         gamma: discount factor
-        loss_weights: weights for mm and explore losses
 
     Returns:
         loss_mm, loss_explore, loss_combined: TD losses for memory management,
@@ -728,17 +732,17 @@ def update_model(
         "done": batch["done"],
     }
 
-    loss_mm = compute_loss_mm(batch_mm, device, dqn, dqn_target, ddqn, gamma)
+    loss_mm = compute_loss_mm(batch_mm, device, dqn, dqn_target, ddqn, gamma["mm"])
     loss_explore = compute_loss_explore(
         batch_explore,
         device,
         dqn,
         dqn_target,
         ddqn,
-        gamma,
+        gamma["explore"],
     )
 
-    loss = loss_weights["mm"] * loss_mm + loss_weights["explore"] * loss_explore
+    loss = loss_mm + loss_explore
 
     optimizer.zero_grad()
     loss.backward()
@@ -757,43 +761,35 @@ def select_action(
     dqn: torch.nn.Module,
     epsilon: float,
     policy_type: Literal["mm", "explore"],
-) -> tuple[list[int], list[list[float]]]:
+) -> tuple[np.ndarray, np.ndarray]:
     r"""Select action(s) from the input state, with epsilon-greedy policy.
 
     Args:
-        state: The working memory. This is NOT what the gym env gives you. This is made
-            by the agent. This shouldn't be a batch of samples, but a single sample
-            without a batch dimension.
+        state: This is the input to the neural network. Make sure that it's compatible
+            with the input shape of the neural network. It's very likely that this
+            looks like a list of quadruples.
         greedy: always pick greedy action if True
         dqn: dqn model
         epsilon: epsilon
         policy_type: "mm" or "explore"
 
     Returns:
-        selected_actions: dimension is [num_actions_taken] for "explore" and scalar for
-            "mm"
-        q_values: dimension is [num_actions_taken, action_space_dim] for "mm" and
-            [action_space_dim] for "explore"
+        selected_actions: dimension is [num_actions_taken]
+        q_values: dimension is [num_actions_taken, action_space_dim]
 
     """
     # Since dqn requires a batch dimension, we need to encapsulate the state in a list
     q_values = dqn(np.array([state], dtype=object), policy_type=policy_type)
 
     q_values = q_values[0]  # remove the dummy batch dimension
-    q_values = q_values.detach().cpu()
+    q_values = q_values.detach().cpu().numpy()
 
     action_space_dim = q_values.shape[1]
 
-    q_values = q_values.tolist()
-
     if greedy or epsilon < np.random.random():
-        selected_actions = [argmax(q_value_) for q_value_ in q_values]
+        selected_actions = q_values.argmax(axis=1)
     else:
-        selected_actions = [random.randint(0, action_space_dim - 1) for _ in q_values]
-
-    if policy_type == "explore":
-        q_values = q_values[0]
-        selected_actions = selected_actions[0]
+        selected_actions = np.random.randint(0, action_space_dim, size=len(q_values))
 
     return selected_actions, q_values
 
@@ -877,10 +873,10 @@ def save_states_q_values_actions(
     to_save = [
         {
             "state": s,
-            "q_values_explore": q["explore"],
-            "action_explore": a["explore"],
-            "q_values_mm": q["mm"],
-            "action_mm": a["mm"],
+            "q_values_explore": q["explore"].tolist(),
+            "action_explore": a["explore"].tolist(),
+            "q_values_mm": q["mm"].tolist(),
+            "action_mm": a["mm"].tolist(),
         }
         for s, q, a in zip(states, q_values, actions)
     ]

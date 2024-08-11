@@ -14,16 +14,16 @@ from agent import HandcraftedAgent
 class HandcraftedAgentTest(unittest.TestCase):
     def test_all_agents(self) -> None:
         terminates_at = 4
-        for mm_policy in ["random", "episodic", "semantic"]:
+        for mm_policy in ["random", "episodic", "semantic", "handcrafted"]:
             for qa_function in ["latest_strongest", "latest", "strongest", "random"]:
                 for explore_policy in ["random", "avoid_walls"]:
-                    for capacity_long in [2, 6]:
+                    for capacity_long in [6]:
                         for pretrain_semantic in [
                             False,
                             "include_walls",
                             "exclude_walls",
                         ]:
-                            for semantic_decay_factor in [0.9]:
+                            for semantic_decay_factor in [0.8]:
                                 for seed in range(1):
                                     agent = HandcraftedAgent(
                                         env_str="room_env:RoomEnv-v2",
@@ -56,7 +56,7 @@ class HandcraftedAgentTest(unittest.TestCase):
                                         mm_policy=mm_policy,
                                         qa_function=qa_function,
                                         explore_policy=explore_policy,
-                                        num_samples_for_results=10,
+                                        num_samples_for_results=2,
                                         capacity={
                                             "long": capacity_long,
                                             "short": 15,

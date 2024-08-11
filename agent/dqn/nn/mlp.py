@@ -48,23 +48,16 @@ class MLP(torch.nn.Module):
         # Define the layers for the advantage stream
         advantage_layers = []
         advantage_layers.append(
-            self._init_layer(
-                torch.nn.Linear(self.input_size, self.hidden_size, device=self.device)
-            )
+            torch.nn.Linear(self.input_size, self.hidden_size, device=self.device)
         )
+        advantage_layers.append(torch.nn.ReLU())
         for _ in range(self.num_hidden_layers - 1):
             advantage_layers.append(
-                self._init_layer(
-                    torch.nn.Linear(
-                        self.hidden_size, self.hidden_size, device=self.device
-                    )
-                )
+                torch.nn.Linear(self.hidden_size, self.hidden_size, device=self.device)
             )
             advantage_layers.append(torch.nn.ReLU())
         advantage_layers.append(
-            self._init_layer(
-                torch.nn.Linear(self.hidden_size, self.n_actions, device=self.device)
-            )
+            torch.nn.Linear(self.hidden_size, self.n_actions, device=self.device)
         )
         self.advantage_layer = torch.nn.Sequential(*advantage_layers)
 
@@ -72,34 +65,31 @@ class MLP(torch.nn.Module):
             # Define the layers for the value stream
             value_layers = []
             value_layers.append(
-                self._init_layer(
-                    torch.nn.Linear(
-                        self.input_size, self.hidden_size, device=self.device
-                    )
-                )
+                torch.nn.Linear(self.input_size, self.hidden_size, device=self.device)
             )
+            value_layers.append(torch.nn.ReLU())
             for _ in range(self.num_hidden_layers - 1):
                 value_layers.append(
-                    self._init_layer(
-                        torch.nn.Linear(
-                            self.hidden_size, self.hidden_size, device=self.device
-                        )
+                    torch.nn.Linear(
+                        self.hidden_size, self.hidden_size, device=self.device
                     )
                 )
                 value_layers.append(torch.nn.ReLU())
             value_layers.append(
-                self._init_layer(
-                    torch.nn.Linear(self.hidden_size, 1, device=self.device)
-                )
+                torch.nn.Linear(self.hidden_size, 1, device=self.device)
             )
             self.value_layer = torch.nn.Sequential(*value_layers)
 
-    def _init_layer(self, layer):
-        if isinstance(layer, torch.nn.Linear):
-            xavier_normal_(layer.weight)
-            if layer.bias is not None:
-                layer.bias.data.zero_()
-        return layer
+        # Apply Xavier initialization to all layers
+        self._apply_xavier_initialization()
+
+    def _apply_xavier_initialization(self):
+        """Applies Xavier Normal initialization to all linear layers."""
+        for m in self.modules():
+            if isinstance(m, torch.nn.Linear):
+                xavier_normal_(m.weight)
+                if m.bias is not None:
+                    m.bias.data.zero_()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass of the neural network.

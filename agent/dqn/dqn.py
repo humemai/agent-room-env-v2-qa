@@ -7,10 +7,11 @@ import shutil
 from typing import Literal
 
 import gymnasium as gym
+import numpy as np
 import torch
 import torch.optim as optim
 from humemai.utils import is_running_notebook, write_yaml
-from humemai.memory import Memory, ShortMemory, LongMemory, MemorySystems
+from humemai.memory import ShortMemory, LongMemory, MemorySystems
 
 from .nn import GNN
 from .utils import (
@@ -28,6 +29,7 @@ from ..policy import (
     encode_all_observations,
     answer_question,
     manage_memory,
+    explore,
 )
 
 
@@ -46,15 +48,14 @@ class DQNAgent:
         self,
         env_str: str = "room_env:RoomEnv-v2",
         num_iterations: int = 10000,
-        replay_buffer_size: int = 10000,
-        validation_starts_at: int = 5000,
-        warm_start: int = 1000,
+        replay_buffer_size: int = 1000,
+        warm_start: int = 32,
         batch_size: int = 32,
         target_update_interval: int = 10,
         epsilon_decay_until: float = 10000,
         max_epsilon: float = 1.0,
-        min_epsilon: float = 0.1,
-        gamma: float = 0.9,
+        min_epsilon: float = 0.01,
+        gamma: dict = {"mm": 0.9, "explore": 0.9},
         learning_rate: int = 0.001,
         capacity: dict = {
             "long": 12,
@@ -80,7 +81,6 @@ class DQNAgent:
         train_seed: int = 5,
         test_seed: int = 0,
         device: Literal["cpu", "cuda"] = "cpu",
-        qa_function: str = "latest_strongest",
         env_config: dict = {
             "question_prob": 1.0,
             "terminates_at": 99,
@@ -92,9 +92,15 @@ class DQNAgent:
             "question_interval": 1,
             "include_walls_in_observations": True,
         },
-        intrinsic_reward: float = 1.0,
+        intrinsic_explore_reward: float = 1.0,
         ddqn: bool = True,
         default_root_dir: str = "./training-results/",
+        explore_policy: Literal["random", "avoid_walls", "RL"] = "RL",
+        qa_function: str = "latest_strongest",
+        mm_policy: Literal[
+            "random", "episodic", "semantic", "forget", "RL", "handcrafted"
+        ] = "RL",
+        scale_reward: bool = False,
     ) -> None:
         r"""Initialization.
 
@@ -102,7 +108,6 @@ class DQNAgent:
             env_str: environment string. This has to be "room_env:RoomEnv-v2"
             num_iterations: number of iterations to train
             replay_buffer_size: size of replay buffer
-            validation_starts_at: when to start validation
             warm_start: number of steps to fill the replay buffer, before training
             batch_size: This is the amount of samples sampled from the replay buffer.
             target_update_interval: interval to update target network
@@ -121,9 +126,6 @@ class DQNAgent:
             train_seed: seed for training
             test_seed: seed for testing
             device: This is either "cpu" or "cuda".
-            qa_function: question answering policy Choose one of "episodic_semantic",
-                "random", or "neural". qa_function shouldn't be trained with RL. There is
-                no sequence of states / actions to learn from.
             env_config: The configuration of the environment.
                 question_prob: The probability of a question being asked at every
                     observation.
@@ -131,9 +133,17 @@ class DQNAgent:
                 seed: seed for env
                 room_size: The room configuration to use. Choose one of "dev", "xxs",
                     "xs", "s", "m", or "l".
-            intrinsic_reward: intrinsic reward for exploration
+            intrinsic_explore_reward: intrinsic reward for exploration
             ddqn: whether to use double DQN
             default_root_dir: default root directory to save results
+            explore_policy: exploration policy. Choose one of "random", "avoid_walls",
+                "RL".
+            qa_function: question answering policy Choose one of "episodic_semantic",
+                "random", or "neural". qa_function shouldn't be trained with RL. There is
+                no sequence of states / actions to learn from.
+            mm_policy: memory management policy. Choose one of "random", "episodic",
+                "semantic", "forget", "RL", or "handcrafted".
+            scale_reward: whether to scale the reward
 
         """
         params_to_save = deepcopy(locals())
@@ -161,7 +171,7 @@ class DQNAgent:
         self.device = torch.device(device)
         print(f"Running on {self.device}")
 
-        self.intrinsic_reward = intrinsic_reward
+        self.intrinsic_explore_reward = intrinsic_explore_reward
         self.ddqn = ddqn
         self.val_file_names = []
         self.is_notebook = is_running_notebook()
@@ -169,7 +179,6 @@ class DQNAgent:
         self.plotting_interval = plotting_interval
 
         self.replay_buffer_size = replay_buffer_size
-        self.validation_starts_at = validation_starts_at
         self.batch_size = batch_size
         self.epsilon = max_epsilon
         self.max_epsilon = max_epsilon
@@ -181,7 +190,12 @@ class DQNAgent:
         self.warm_start = warm_start
         assert self.batch_size <= self.warm_start <= self.replay_buffer_size
 
+        self.explore_policy = explore_policy
+        self.mm_policy = mm_policy
+        self.scale_reward = scale_reward
+
         self.action_mm2str = {0: "episodic", 1: "semantic", 2: "forget"}
+        self.action_mm2int = {v: k for k, v in self.action_mm2str.items()}
         self.action_explore2str = {
             0: "north",
             1: "east",
@@ -189,6 +203,7 @@ class DQNAgent:
             3: "west",
             4: "stay",
         }
+        self.action_explore2int = {v: k for k, v in self.action_explore2str.items()}
 
         self.init_memory_systems()
 
@@ -224,7 +239,12 @@ class DQNAgent:
         self._save_number_of_parameters()
 
     def _create_directory(self, params_to_save: dict) -> None:
-        r"""Create the directory to store the results."""
+        r"""Create the directory to store the results.
+
+        Args:
+            params_to_save: parameters to save
+
+        """
         os.makedirs(self.default_root_dir, exist_ok=True)
         write_yaml(params_to_save, os.path.join(self.default_root_dir, "train.yaml"))
 
@@ -248,14 +268,9 @@ class DQNAgent:
         r"""Remove the results from the disk."""
         shutil.rmtree(self.default_root_dir)
 
-    def init_memory_systems(self, reset_semantic_decay: bool = True) -> None:
+    def init_memory_systems(self) -> None:
         r"""Initialize the agent's memory systems. This has nothing to do with the
-        replay buffer.
-
-        Args:
-            reset_semantic_decay: whether to reset the semantic memory system's decay
-
-        """
+        replay buffer."""
         self.memory_systems = MemorySystems(
             short=ShortMemory(capacity=self.capacity["short"]),
             long=LongMemory(
@@ -283,20 +298,23 @@ class DQNAgent:
             else:
                 assert self.memory_systems.long.size > 0
 
-        if reset_semantic_decay:
-            self.num_semantic_decayed = 0
+        self.num_semantic_decayed = 0
 
-    def step(
-        self,
-        working_memory: Memory,
-        questions: list[str],
-        greedy: bool,
-    ) -> tuple[
+    def reset(self) -> None:
+        """Reset the env and the memory systems. observations are encoded."""
+
+        self.init_memory_systems()
+        self.observations, info = self.env.reset()
+        # 0. encode observations
+        encode_all_observations(self.memory_systems, self.observations["room"])
+
+    def step(self, greedy: bool) -> tuple[
         dict,
         list[int],
         list[list[float]],
         list[int],
         list[list[float]],
+        float,
         float,
         list[str],
         bool,
@@ -305,97 +323,137 @@ class DQNAgent:
         environment.
 
         Args:
-            working_memory: The memory used for the (estimated) MDP state.
-            questions: questions to answer
             greedy: whether to use greedy policy
 
         Returns:
-            observations, a_explore, q_explore, a_mm, q_mm, reward, answers, done
+            a_explore, q_explore, a_mm, q_mm, reward, intrinsic_explore_reward, answers,
+            done
 
         """
-        assert self.memory_systems.short.size > 0, "Short-term memory is empty."
-
+        assert not self.memory_systems.short.is_empty, "encode all observations first"
         # 1. explore
-        a_explore, q_explore = select_action(
-            state=working_memory.to_list(),
-            greedy=greedy,
-            dqn=self.dqn,
-            epsilon=self.epsilon,
-            policy_type="explore",
-        )
+        if self.explore_policy.lower() == "rl":
+            a_explore, q_explore = select_action(
+                state=self.memory_systems.get_working_memory().to_list(),
+                greedy=greedy,
+                dqn=self.dqn,
+                epsilon=self.epsilon,
+                policy_type="explore",
+            )
+            if self.intrinsic_explore_reward > 0:
+                intrinsic_explore_reward = self.get_intrinsic_explore_reward(
+                    self.action_explore2str[a_explore.item()]
+                )
+            else:
+                intrinsic_explore_reward = 0
+
+        else:
+            a_explore = explore(self.memory_systems, self.explore_policy)
+            a_explore = np.array(self.action_explore2int[a_explore])
+            # Create dummy Q-values
+            q_explore = np.zeros((1, len(self.action_explore2str)))
+            intrinsic_explore_reward = 0
 
         # 2. question answering
         answers = [
             answer_question(
-                working_memory,
+                self.memory_systems,
                 self.qa_function,
                 question,
             )
-            for question in questions
+            for question in self.observations["questions"]
         ]
 
         # 3. manage memory
-        a_mm, q_mm = select_action(
-            state=working_memory.to_list(),
-            greedy=greedy,
-            dqn=self.dqn,
-            epsilon=self.epsilon,
-            policy_type="mm",
-        )
+        if self.mm_policy.lower() == "rl":
+            a_mm, q_mm = select_action(
+                state=self.memory_systems.get_working_memory().to_list(),
+                greedy=greedy,
+                dqn=self.dqn,
+                epsilon=self.epsilon,
+                policy_type="mm",
+            )
+        else:
+            a_mm = []
+            if self.mm_policy == "handcrafted":
+                for mem_short in self.memory_systems.short:
+                    if mem_short[0] == "agent":
+                        a_mm.append(0)
+                    elif "ind" in mem_short[0] or "dep" in mem_short[0]:
+                        a_mm.append(0)
+                    elif "sta" in mem_short[0]:
+                        a_mm.append(1)
+                    elif "room" in mem_short[0] and "room" in mem_short[2]:
+                        a_mm.append(1)
+                    elif "wall" in mem_short[2]:
+                        a_mm.append(2)
+                    else:
+                        raise ValueError("something is wrong")
+            else:
+                raise NotImplementedError(f"{self.mm_policy} is not implemented.")
 
-        # the dimension of a_mm is [num_actions_taken]
-        assert (
-            len(a_mm) == self.memory_systems.short.size
-        ), f"{len(a_mm)} should be {self.memory_systems.short.size}"
+            a_mm = np.array(a_mm)
+            # Create dummy Q-values
+            q_mm = np.zeros((len(self.memory_systems.short), len(self.action_mm2str)))
+
+        assert len(a_mm) == self.memory_systems.short.size
 
         for a_mm_, mem_short in zip(a_mm, self.memory_systems.short):
             manage_memory(self.memory_systems, self.action_mm2str[a_mm_], mem_short)
 
         (
-            observations,
+            self.observations,
             reward,
             done,
             truncated,
             info,
-        ) = self.env.step((answers, self.action_explore2str[a_explore]))
+        ) = self.env.step((answers, self.action_explore2str[a_explore.item()]))
         self.memory_systems.long.decay()
         self.num_semantic_decayed += 1
         done = done or truncated
 
+        # 4. encode observations
+        encode_all_observations(self.memory_systems, self.observations["room"])
+
         return (
-            observations,
             a_explore,
             q_explore,
             a_mm,
             q_mm,
             reward,
+            intrinsic_explore_reward,
             answers,
             done,
         )
 
-    def get_intrinsic_actions(self, working_memory: Memory) -> list:
-        r"""Get intrinsic actions for the current working memory.
+    def get_intrinsic_explore_reward(self, a_explore: str) -> float:
+        r"""Get intrinsic actions.
 
         Args:
-            working_memory: current working memory
+            a_explore: action in string
 
         Returns:
-            intrinsic_actions: intrinsic actions
+            intrinsic explore reward
 
         """
-        intrinsic_actions = []
-        for mem in working_memory:
+        assert isinstance(a_explore, str)
+        assert not self.memory_systems.short.is_empty
+        intrinsic_explore_actions = []
+        for mem in self.memory_systems.get_working_memory():
             if (
                 "room" in mem[0]
                 and mem[1] in ["north", "east", "south", "west"]
                 and "wall" not in mem[2]
                 and "current_time" in mem[3]
             ):
-                intrinsic_actions.append(mem[1])
+                intrinsic_explore_actions.append(mem[1])
 
-        assert len(intrinsic_actions) > 0, "No intrinsic actions found."
+        assert len(intrinsic_explore_actions) > 0, "No intrinsic actions found."
 
-        return intrinsic_actions
+        if a_explore in intrinsic_explore_actions:
+            return self.intrinsic_explore_reward
+        else:
+            return 0
 
     def fill_replay_buffer(self) -> None:
         r"""Make the replay buffer full in the beginning with the uniformly-sampled
@@ -407,38 +465,35 @@ class DQNAgent:
 
         while len(self.replay_buffer) < self.warm_start:
             if done:
-                self.init_memory_systems(reset_semantic_decay=True)
-                observations, info = self.env.reset()
-                encode_all_observations(self.memory_systems, observations["room"])
+                self.reset()
                 done = False
             else:
-                working_memory = self.memory_systems.get_working_memory()
-                intrinsic_actions = self.get_intrinsic_actions(working_memory)
-                state = deepcopy(working_memory.to_list())
+                state = deepcopy(self.memory_systems.get_working_memory().to_list())
                 (
-                    observations,
                     a_explore,
                     q_explore,
                     a_mm,
                     q_mm,
                     reward,
+                    intrinsic_explore_reward,
                     answers,
                     done,
-                ) = self.step(working_memory, observations["questions"], greedy=False)
-                if a_explore in intrinsic_actions:
-                    intrinsic_reward_explore = self.intrinsic_reward
-                encode_all_observations(self.memory_systems, observations["room"])
-                working_memory = self.memory_systems.get_working_memory()
-                next_state = deepcopy(working_memory.to_list())
-                scaled_reward = reward / self.env.unwrapped.num_questions_step
-                assert scaled_reward <= 1
+                ) = self.step(greedy=False)
+                next_state = deepcopy(
+                    self.memory_systems.get_working_memory().to_list()
+                )
+
+                if self.scale_reward:
+                    reward /= self.env.unwrapped.num_questions_step
+                    assert reward <= 1
+
                 self.replay_buffer.store(
                     *[
                         state,
                         a_explore,
                         a_mm,
-                        scaled_reward + intrinsic_reward_explore,
-                        scaled_reward,
+                        reward + intrinsic_explore_reward,
+                        reward,
                         next_state,
                         done,
                     ]
@@ -452,13 +507,6 @@ class DQNAgent:
         self.training_loss = {"total": [], "mm": [], "explore": []}
         self.scores = {"train": [], "val": [], "test": None}
 
-        if self.validation_starts_at > 0:
-            for _ in range(
-                self.validation_starts_at // (self.env_config["terminates_at"] + 1)
-                - self.validation_interval
-            ):
-                self.scores["val"].append([0] * self.num_samples_for_results["val"])
-
         self.dqn.train()
 
         done = True
@@ -467,36 +515,36 @@ class DQNAgent:
 
         while True:
             if done:
-                self.init_memory_systems(reset_semantic_decay=True)
-                observations, info = self.env.reset()
-                encode_all_observations(self.memory_systems, observations["room"])
+                self.reset()
                 done = False
             else:
-                working_memory = self.memory_systems.get_working_memory()
-                state = deepcopy(working_memory.to_list())
+                state = deepcopy(self.memory_systems.get_working_memory().to_list())
                 (
-                    observations,
                     a_explore,
                     q_explore,
                     a_mm,
                     q_mm,
                     reward,
+                    intrinsic_explore_reward,
                     answers,
                     done,
-                ) = self.step(working_memory, observations["questions"], greedy=False)
-                encode_all_observations(self.memory_systems, observations["room"])
-                working_memory = self.memory_systems.get_working_memory()
-                next_state = deepcopy(working_memory.to_list())
-                scaled_reward = reward / self.env.unwrapped.num_questions_step
-                assert scaled_reward <= 1
-                intrinsic_reward = self.calculate_intrinsic_reward(state, next_state)
+                ) = self.step(greedy=False)
+                score += reward
+                next_state = deepcopy(
+                    self.memory_systems.get_working_memory().to_list()
+                )
+
+                if self.scale_reward:
+                    reward /= self.env.unwrapped.num_questions_step
+                    assert reward <= 1
+
                 self.replay_buffer.store(
                     *[
                         state,
                         a_explore,
                         a_mm,
-                        scaled_reward + intrinsic_reward,
-                        scaled_reward,
+                        reward + intrinsic_explore_reward,
+                        reward,
                         next_state,
                         done,
                     ]
@@ -504,7 +552,6 @@ class DQNAgent:
 
                 self.q_values["train"]["explore"].append(q_explore)
                 self.q_values["train"]["mm"].append(q_mm)
-                score += reward
                 self.iteration_idx += 1
 
             if done:
@@ -513,10 +560,13 @@ class DQNAgent:
                 score = 0
 
                 if (
-                    self.iteration_idx >= self.validation_starts_at
-                ) and self.iteration_idx % (
-                    self.validation_interval * (self.env_config["terminates_at"] + 1)
-                ) == 0:
+                    self.iteration_idx
+                    % (
+                        self.validation_interval
+                        * (self.env_config["terminates_at"] + 1)
+                    )
+                    == 0
+                ):
                     with torch.no_grad():
                         self.validate()
 
@@ -586,28 +636,21 @@ class DQNAgent:
             score = 0
             while True:
                 if done:
-                    self.init_memory_systems(reset_semantic_decay=True)
-                    observations, info = self.env.reset()
-                    encode_all_observations(self.memory_systems, observations["room"])
+                    self.reset()
                     done = False
 
                 else:
-                    working_memory = self.memory_systems.get_working_memory()
-                    state = deepcopy(working_memory.to_list())
+                    state = deepcopy(self.memory_systems.get_working_memory().to_list())
                     (
-                        observations,
                         a_explore,
                         q_explore,
                         a_mm,
                         q_mm,
                         reward,
+                        intrinsic_explore_reward,
                         answers,
                         done,
-                    ) = self.step(
-                        working_memory, observations["questions"], greedy=True
-                    )
-                    encode_all_observations(self.memory_systems, observations["room"])
-
+                    ) = self.step(greedy=True)
                     score += reward
 
                     if idx == self.num_samples_for_results[val_or_test] - 1:
@@ -621,9 +664,6 @@ class DQNAgent:
                     assert (
                         self.num_semantic_decayed
                         == self.env_config["terminates_at"] + 1
-                    ), (
-                        f"{self.num_semantic_decayed} should be "
-                        f"{self.env_config['terminates_at'] + 1}  "
                     )
                     break
 
@@ -636,7 +676,7 @@ class DQNAgent:
         self.dqn.eval()
         scores_temp, states, q_values, actions = self.validate_test_middle("val")
 
-        num_episodes = self.iteration_idx // (self.env_config["terminates_at"] + 1)
+        num_episodes = self.iteration_idx // (self.env_config["terminates_at"] + 1) - 1
 
         save_validation(
             scores_temp=scores_temp,
