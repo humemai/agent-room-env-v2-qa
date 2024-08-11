@@ -1,7 +1,6 @@
 import unittest
 import torch
 import numpy as np
-from typing import Literal
 
 from agent.dqn.nn import GNN
 from agent.dqn.nn.utils import process_graph
@@ -265,6 +264,17 @@ class TestGNNStarE(unittest.TestCase):
             self.agent_entity_idx,
         ) = self.gnn.process_batch(data)
 
+        self.q_mm = self.gnn(data, "mm")
+        self.q_explore = self.gnn(data, "explore")
+
+        self.q_mm0 = self.gnn(np.array([sample0]), "mm")
+        self.q_mm1 = self.gnn(np.array([sample1]), "mm")
+        self.q_mm2 = self.gnn(np.array([sample2]), "mm")
+
+        self.q_explore0 = self.gnn(np.array([sample0]), "explore")
+        self.q_explore1 = self.gnn(np.array([sample1]), "explore")
+        self.q_explore2 = self.gnn(np.array([sample2]), "explore")
+
     def test_entity_embeddings(self):
 
         a = self.gnn.entity_embeddings[
@@ -400,3 +410,13 @@ class TestGNNStarE(unittest.TestCase):
         )
 
         self.assertTrue(torch.equal(agent_entity_idx, self.agent_entity_idx))
+
+    # def test_q_mm(self):
+    #     q_mm = torch.cat([self.q_mm0, self.q_mm1, self.q_mm2], dim=0)
+    #     self.assertTrue(torch.equal(self.q_mm, q_mm))
+
+    # def test_q_explore(self):
+    #     q_explore = torch.cat(
+    #         [self.q_explore0, self.q_explore1, self.q_explore2], dim=0
+    #     )
+    #     self.assertTrue(torch.equal(self.q_explore, q_explore))
