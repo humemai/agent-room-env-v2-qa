@@ -4,11 +4,11 @@ Paper: "Message Passing for Hyper-Relational Knowledge Graphs"
 GitHub: https://github.com/migalkin/StarE
 """
 
-import torch
-
-from torch_scatter import scatter_add
-from torch_geometric.nn import MessagePassing
 from typing import Optional, Tuple
+
+import torch
+from torch_geometric.nn import MessagePassing
+from torch_scatter import scatter_add
 
 from .utils import rotate
 

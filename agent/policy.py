@@ -3,10 +3,10 @@
 The trained neural network policies are not implemented yet.
 """
 
-from typing import Literal
 import random
+from typing import Literal
 
-from humemai.memory import ShortMemory, MemorySystems
+from humemai.memory import MemorySystems, ShortMemory
 
 
 def encode_observation(memory_systems: MemorySystems, obs: list[str | int]) -> None:

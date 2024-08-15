@@ -1,26 +1,16 @@
 import unittest
-import torch
-import numpy as np
 from typing import Literal
 
+import numpy as np
+import torch
+
 from agent.dqn.nn import GNN
-from agent.dqn.utils import (
-    ReplayBuffer,
-    select_action,
-    update_epsilon,
-    plot_results,
-    console,
-    save_final_results,
-    find_non_masked_rows,
-    compute_loss_mm,
-    compute_loss_explore,
-    update_model,
-    select_action,
-    save_validation,
-    save_states_q_values_actions,
-    target_hard_update,
-    update_epsilon,
-)
+from agent.dqn.utils import (ReplayBuffer, compute_loss_explore,
+                             compute_loss_mm, console, find_non_masked_rows,
+                             plot_results, save_final_results,
+                             save_states_q_values_actions, save_validation,
+                             select_action, target_hard_update, update_epsilon,
+                             update_model)
 
 batch = {
     "obs": np.array(

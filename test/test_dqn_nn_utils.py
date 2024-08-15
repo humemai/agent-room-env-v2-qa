@@ -1,21 +1,14 @@
 import unittest
-import torch
-import numpy as np
 from typing import Literal
 
+import numpy as np
+import torch
+
 from agent.dqn.nn import GNN
-from agent.dqn.nn.utils import (
-    maybe_num_nodes,
-    softmax,
-    com_mult,
-    conj,
-    cconv,
-    ccorr,
-    rotate,
-    scatter_,
-    extract_entities_and_relations,
-    process_graph,
-)
+from agent.dqn.nn.utils import (cconv, ccorr, com_mult, conj,
+                                extract_entities_and_relations,
+                                maybe_num_nodes, process_graph, rotate,
+                                scatter_, softmax)
 
 sample = [
     ["room_000", "south", "room_004", {"current_time": 18, "timestamp": [13]}],

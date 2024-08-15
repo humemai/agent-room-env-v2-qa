@@ -2,16 +2,17 @@
 
 import datetime
 import os
-from copy import deepcopy
 import shutil
+from copy import deepcopy
 from typing import Literal
 
 import gymnasium as gym
 import numpy as np
+from humemai.memory import LongMemory, MemorySystems, ShortMemory
 from humemai.utils import write_yaml
-from humemai.memory import ShortMemory, LongMemory, MemorySystems
 
-from .policy import answer_question, encode_all_observations, manage_memory, explore
+from .policy import (answer_question, encode_all_observations, explore,
+                     manage_memory)
 
 
 class HandcraftedAgent:

@@ -1,20 +1,15 @@
 """Utility functions for DQN."""
 
 import os
-from typing import Literal
 import random
+from typing import Literal
 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn.functional as F
-from humemai.utils import (
-    argmax,
-    is_running_notebook,
-    write_pickle,
-    write_yaml,
-    list_duplicates_of,
-)
+from humemai.utils import (argmax, is_running_notebook, list_duplicates_of,
+                           write_pickle, write_yaml)
 from IPython.display import clear_output
 from tqdm.auto import tqdm
 

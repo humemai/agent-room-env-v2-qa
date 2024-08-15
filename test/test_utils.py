@@ -1,12 +1,10 @@
 import unittest
+
 import numpy as np
 import torch
-from agent.utils import (
-    argmax,
-    get_duplicate_dicts,
-    list_duplicates_of,
-    positional_encoding,
-)
+
+from agent.utils import (argmax, get_duplicate_dicts, list_duplicates_of,
+                         positional_encoding)
 
 
 class TestUtils(unittest.TestCase):

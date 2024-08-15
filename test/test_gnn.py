@@ -1,6 +1,7 @@
 import unittest
-import torch
+
 import numpy as np
+import torch
 
 from agent.dqn.nn import GNN
 from agent.dqn.nn.utils import process_graph

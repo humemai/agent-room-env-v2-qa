@@ -1,15 +1,12 @@
 import unittest
 from collections import Counter
 from copy import deepcopy
-from humemai.memory import ShortMemory, LongMemory, MemorySystems
-from agent.policy import (
-    find_agent_location,
-    explore,
-    encode_all_observations,
-    encode_observation,
-    manage_memory,
-    answer_question,
-)
+
+from humemai.memory import LongMemory, MemorySystems, ShortMemory
+
+from agent.policy import (answer_question, encode_all_observations,
+                          encode_observation, explore, find_agent_location,
+                          manage_memory)
 
 
 class TestFindAgentLocation(unittest.TestCase):

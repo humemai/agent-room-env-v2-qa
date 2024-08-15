@@ -2,35 +2,24 @@
 
 import datetime
 import os
-from copy import deepcopy
 import shutil
+from copy import deepcopy
 from typing import Literal
 
 import gymnasium as gym
 import numpy as np
 import torch
 import torch.optim as optim
+from humemai.memory import LongMemory, MemorySystems, ShortMemory
 from humemai.utils import is_running_notebook, write_yaml
-from humemai.memory import ShortMemory, LongMemory, MemorySystems
 
+from ..policy import (answer_question, encode_all_observations, explore,
+                      manage_memory)
 from .nn import GNN
-from .utils import (
-    ReplayBuffer,
-    plot_results,
-    save_final_results,
-    save_states_q_values_actions,
-    save_validation,
-    select_action,
-    target_hard_update,
-    update_epsilon,
-    update_model,
-)
-from ..policy import (
-    encode_all_observations,
-    answer_question,
-    manage_memory,
-    explore,
-)
+from .utils import (ReplayBuffer, plot_results, save_final_results,
+                    save_states_q_values_actions, save_validation,
+                    select_action, target_hard_update, update_epsilon,
+                    update_model)
 
 
 class DQNAgent:

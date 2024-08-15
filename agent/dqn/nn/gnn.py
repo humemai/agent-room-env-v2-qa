@@ -1,10 +1,12 @@
 """A lot copied from https://github.com/migalkin/StarE"""
 
 from typing import Literal
+
 import numpy as np
 import torch
-from torch_geometric.nn import GCNConv
 import torch.nn.functional as F
+from torch_geometric.nn import GCNConv
+
 from .mlp import MLP
 from .stare_conv import StarEConvLayer
 from .utils import process_graph
