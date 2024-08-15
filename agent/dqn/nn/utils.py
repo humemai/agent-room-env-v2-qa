@@ -1,6 +1,5 @@
 """A lot copied from https://github.com/migalkin/StarE"""
 
-import numpy as np
 import torch
 import torch_scatter
 from torch_scatter import scatter_add, scatter_max

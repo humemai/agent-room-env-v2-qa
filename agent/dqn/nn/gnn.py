@@ -13,23 +13,29 @@ from .utils import process_graph
 class GNN(torch.nn.Module):
     """Graph Neural Network model. This model is used to compute the Q-values for the
     memory management and explore policies. This model has N layers of GCNConv or
-    StarEConv layers and two MLPs for the memory management and explore policies.
+    StarEConv layers and two MLPs for the memory management and explore policies,
+    respectively.
 
     Attributes:
         entities: List of entities
         relations: List of relations
-        embedding_dim: The dimension of the embeddings. This will be the size of the
-            input node embeddings.
-        num_layers_GNN: The number of layers in the GNN.
-        num_hidden_layers_MLP: The number of layers in the MLP.
-        device: The device to use.
-        entity_embeddings: The entity embeddings.
-        relation_embeddings: The relation embeddings.
-        convs: The graph convolutional layers.
-    entity_to_idx: The entity to index mapping.
-        relation_to_idx: The relation to index mapping.
-        mlp_mm: The MLP for the memory management policy.
-        mlp_explore: The MLP for the explore policy.
+        gcn_layer_params: The parameters for the GCN layers
+        gcn_type: The type of GCN layer
+        mlp_params: The parameters for the MLPs
+        rotational_for_relation: Whether to use rotational embeddings for relations
+        device: The device to use
+        embedding_dim: The dimension of the embeddings
+        entity_to_idx: The mapping from entities to indices
+        relation_to_idx: The mapping from relations to indices
+        entity_embeddings: The entity embeddings
+        relation_embeddings: The relation embeddings
+        relu_between_gcn_layers: Whether to apply ReLU activation between GCN layers
+        dropout_between_gcn_layers: Whether to apply dropout between GCN layers
+        relu: The ReLU activation function
+        drop: The dropout layer
+        gcn_layers: The GCN layers
+        mlp_mm: The MLP for memory management policy
+        mlp_explore: The MLP for explore policy
 
     """
 
@@ -147,11 +153,9 @@ class GNN(torch.nn.Module):
         else:
             raise ValueError(f"{self.gcn_type} is not a valid GNN type.")
 
-        # self.embedding_dim * 3 accounts for the concatenation of the head, relation,
-        # and tail embeddings
         self.mlp_mm = MLP(
             n_actions=3,
-            input_size=self.embedding_dim * 3,
+            input_size=self.embedding_dim * 3,  # [head, relation, tail]
             hidden_size=self.embedding_dim,
             device=device,
             **mlp_params,
@@ -409,6 +413,7 @@ class GNN(torch.nn.Module):
                     num_short_memories.cumsum(0).roll(1), num_short_memories
                 )
             ]
+
             q_mm[0] = q_mm_[: num_short_memories[0]]
 
             return q_mm
@@ -419,9 +424,10 @@ class GNN(torch.nn.Module):
                 node_ = entity_embeddings[idx]
                 node.append(node_)
 
-            node = torch.stack(node)
+            node = torch.stack(node, dim=0)
 
             q_explore = self.mlp_explore(node)
+
             q_explore = [row.unsqueeze(0) for row in list(q_explore.unbind(dim=0))]
 
             return q_explore

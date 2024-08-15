@@ -272,7 +272,7 @@ def plot_results(
                 label="Test score",
             )
             plt.xlabel("episode")
-        plt.legend(loc="upper left")
+        plt.legend(loc="best")
 
         plt.subplot(331)
         plt.title("training td loss (log scale)")
@@ -281,7 +281,7 @@ def plot_results(
         plt.plot(training_loss["explore"], label="explore")
         plt.yscale("log")  # Set y-axis to log scale
         plt.xlabel("update counts")
-        plt.legend(loc="upper left")
+        plt.legend(loc="best")
 
         plt.subplot(332)
         plt.title("epsilons")
@@ -300,7 +300,7 @@ def plot_results(
                     ],
                     label=action_mm2str[action_number],
                 )
-            plt.legend(loc="upper left")
+            plt.legend(loc="best")
             plt.xlabel("number of actions")
 
         for subplot_num, split in zip([337, 338, 339], ["train", "val", "test"]):
@@ -314,7 +314,7 @@ def plot_results(
                     ],
                     label=action_explore2str[action_number],
                 )
-            plt.legend(loc="upper left")
+            plt.legend(loc="best")
             plt.xlabel("number of actions")
 
         plt.subplots_adjust(hspace=0.5)
@@ -334,7 +334,7 @@ def plot_results(
         plt.plot(training_loss["mm"], label="mm")
         plt.plot(training_loss["explore"], label="explore")
         plt.xlabel("update counts")
-        plt.legend(loc="upper left")
+        plt.legend(loc="best")
         plt.subplots_adjust(hspace=0.5)
 
     elif to_plot == "epsilons":
@@ -375,7 +375,7 @@ def plot_results(
                 label="Test score",
             )
             plt.xlabel("episode")
-        plt.legend(loc="upper left")
+        plt.legend(loc="best")
         plt.subplots_adjust(hspace=0.5)
 
     else:
@@ -389,7 +389,7 @@ def plot_results(
                     [q_value_[action_number] for q_value_ in q_values[split]["mm"]],
                     label=f"action {action_number}",
                 )
-            plt.legend(loc="upper left")
+            plt.legend(loc="best")
             plt.xlabel("number of actions")
 
         for subplot_num, split in zip([234, 235, 236], ["train", "val", "test"]):
@@ -403,7 +403,7 @@ def plot_results(
                     ],
                     label=f"action {action_number}",
                 )
-            plt.legend(loc="upper left")
+            plt.legend(loc="best")
             plt.xlabel("number of actions")
 
         plt.subplots_adjust(hspace=0.5)

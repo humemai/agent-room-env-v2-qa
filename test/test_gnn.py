@@ -209,9 +209,14 @@ class TestGNNStarE(unittest.TestCase):
                 "type": "StarE",
                 "embedding_dim": 4,
                 "num_layers": 2,
-                "gcn_drop": 0.1,
+                "gcn_drop": 0.0,
                 "triple_qual_weight": 0.8,
             },
+            relu_between_gcn_layers=True,
+            dropout_between_gcn_layers=False,
+            mlp_params={"num_hidden_layers": 2, "dueling_dqn": True},
+            rotational_for_relation=True,
+            device="cpu",
         )
 
         (
@@ -411,12 +416,52 @@ class TestGNNStarE(unittest.TestCase):
 
         self.assertTrue(torch.equal(agent_entity_idx, self.agent_entity_idx))
 
-    # def test_q_mm(self):
-    #     q_mm = torch.cat([self.q_mm0, self.q_mm1, self.q_mm2], dim=0)
-    #     self.assertTrue(torch.equal(self.q_mm, q_mm))
+    def test_q_mm(self):
+        self.assertEqual(len(self.q_mm), 3)
+        self.assertEqual(len(self.q_mm0), 1)
+        self.assertEqual(len(self.q_mm1), 1)
+        self.assertEqual(len(self.q_mm2), 1)
 
-    # def test_q_explore(self):
-    #     q_explore = torch.cat(
-    #         [self.q_explore0, self.q_explore1, self.q_explore2], dim=0
-    #     )
-    #     self.assertTrue(torch.equal(self.q_explore, q_explore))
+        self.assertTrue(
+            torch.equal(torch.tensor(self.q_mm[0].shape), torch.tensor([2, 3]))
+        )
+        self.assertTrue(
+            torch.equal(torch.tensor(self.q_mm0[0].shape), torch.tensor([2, 3]))
+        )
+        self.assertTrue(
+            torch.equal(torch.tensor(self.q_mm1[0].shape), torch.tensor([1, 3]))
+        )
+        self.assertTrue(
+            torch.equal(torch.tensor(self.q_mm1[0].shape), torch.tensor([1, 3]))
+        )
+        self.assertTrue(
+            torch.equal(torch.tensor(self.q_mm2[0].shape), torch.tensor([1, 3]))
+        )
+        self.assertTrue(
+            torch.equal(torch.tensor(self.q_mm2[0].shape), torch.tensor([1, 3]))
+        )
+
+    def test_q_explore(self):
+        self.assertEqual(len(self.q_explore), 3)
+        self.assertEqual(len(self.q_explore0), 1)
+        self.assertEqual(len(self.q_explore1), 1)
+        self.assertEqual(len(self.q_explore2), 1)
+
+        self.assertTrue(
+            torch.equal(torch.tensor(self.q_explore[0].shape), torch.tensor([1, 5]))
+        )
+        self.assertTrue(
+            torch.equal(torch.tensor(self.q_explore0[0].shape), torch.tensor([1, 5]))
+        )
+        self.assertTrue(
+            torch.equal(torch.tensor(self.q_explore1[0].shape), torch.tensor([1, 5]))
+        )
+        self.assertTrue(
+            torch.equal(torch.tensor(self.q_explore1[0].shape), torch.tensor([1, 5]))
+        )
+        self.assertTrue(
+            torch.equal(torch.tensor(self.q_explore2[0].shape), torch.tensor([1, 5]))
+        )
+        self.assertTrue(
+            torch.equal(torch.tensor(self.q_explore2[0].shape), torch.tensor([1, 5]))
+        )
