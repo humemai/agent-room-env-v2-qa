@@ -3,7 +3,8 @@
 [![DOI](https://zenodo.org/badge/777194227.svg)](https://zenodo.org/doi/10.5281/zenodo.10876430)
 [![DOI](https://img.shields.io/badge/Paper-PDF-red.svg)]()
 
-This repo is to train an agent with a GNN that interacts with the [RoomEnv-v2](https://github.com/humemai/room-env).
+- This repo trains an agent with a GNN that interacts with the [RoomEnv-v2](https://github.com/humemai/room-env)
+- The HumemAI-Unified agent is an upgrade from [HumemAI](https://github.com/humemai/agent-room-env-v2-lstm)
 
 ## Prerequisites
 
@@ -21,12 +22,12 @@ This repo is to train an agent with a GNN that interacts with the [RoomEnv-v2](h
 ## RoomEnv-v2
 
 | An illustration of a hidden state $s_{t}$ (in white) and partial observation $o_{t}$ (in gray). |
-| :-----------------------------------------------------------------------------------------------: |
-|                               ![](./figures/room-layout-xl-gnn.png)                               |
+| :---------------------------------------------------------------------------------------------: |
+|                              ![](./figures/room-layout-xl-gnn.png)                              |
 
 | A hidden state $s_{t}$ (in white) and partial observation $o_{t}$ (in gray) represented as a KG. |
-| :------------------------------------------------------------------------------------------------: |
-|                              ![](./figures/room-layout-kg-xl-gnn.png)                              |
+| :----------------------------------------------------------------------------------------------: |
+|                             ![](./figures/room-layout-kg-xl-gnn.png)                             |
 
 ## HumemAI-Unified Agent
 
@@ -34,13 +35,21 @@ This repo is to train an agent with a GNN that interacts with the [RoomEnv-v2](h
 | :--------------------------------------------------: |
 |             ![](./figures/gnn-steps.png)             |
 
-| A forward-pass example of StarE-GCN, $\text{MLP}^{\text{mm}}$, and $\text{MLP}^{\text{explore}}$ |
-| :--------------------------------------------------------------------------------------------------: |
-|                                ![](./figures/gnn-explore-and-mm.png)                                 |
+|              DQN of HumemAI              |
+| :--------------------------------------: |
+| ![](./figures/humemai-lstm-q-values.png) |
+
+|         DQN of HumemAI-Unified          |
+| :-------------------------------------: |
+| ![](./figures/humemai-gnn-q-values.png) |
+
+| A forward-pass example of $\text{StarE-GCN}$, $\text{MLP}^{\text{mm}}$, and $\text{MLP}^{\text{explore}}$ |
+| :-------------------------------------------------------------------------------------------------------: |
+|                                   ![](./figures/gnn-explore-and-mm.png)                                   |
 
 | An example of the agent's (HumemAI-Unified with $capacity=192$) memory $\bm{M}_{t=99}$. |
-| :---------------------------------------------------------------------------------------: |
-|                     ![](./figures/memory-systems-example-xl-gnn.png)                      |
+| :-------------------------------------------------------------------------------------: |
+|                    ![](./figures/memory-systems-example-xl-gnn.png)                     |
 
 ## Training Results
 
