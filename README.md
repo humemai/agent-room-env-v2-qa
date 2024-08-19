@@ -65,10 +65,10 @@
 |          | HumemAI             | 118 (±18) | 235 (±37)     |
 |          | Baseline            | N/A       | 200 (±15)     |
 | 96       | **HumemAI-Unified** | N/A       | **466 (±37)** |
-|          | HumemAI             | N/A       | 209 (±87)     |
+|          | HumemAI             | 217 (±27) | 209 (±87)     |
 |          | Baseline            | N/A       | 155 (±77)     |
 | 192      | **HumemAI-Unified** | N/A       | **482 (±14)** |
-|          | HumemAI             | N/A       | 176 (±115)    |
+|          | HumemAI             | 265 (±22) | 176 (±115)    |
 |          | Baseline            | N/A       | 144 (±68)     |
 
 ## pdoc documentation
