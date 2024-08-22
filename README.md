@@ -1,6 +1,6 @@
 # Agent for RoomEnv-v2
 
-[![DOI](https://zenodo.org/badge/777194227.svg)](https://zenodo.org/doi/10.5281/zenodo.10876430)
+[![DOI](https://zenodo.org/badge/845897921.svg)](https://zenodo.org/doi/10.5281/zenodo.13358323)
 [![DOI](https://img.shields.io/badge/Paper-PDF-red.svg)]()
 
 - This repo trains an agent with a GNN that interacts with the [RoomEnv-v2](https://github.com/humemai/room-env)
