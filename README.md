@@ -73,7 +73,7 @@
 
 ## pdoc documentation
 
-Click on [this link](https://humemai.github.io/agent-room-env-v2-lstm) to see the HTML
+Click on [this link](https://humemai.github.io/agent-room-env-v2-gnn) to see the HTML
 rendered docstrings
 
 ## Contributing
