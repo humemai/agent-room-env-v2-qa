@@ -1,7 +1,7 @@
 # Agent for RoomEnv-v2
 
 [![DOI](https://zenodo.org/badge/777194227.svg)](https://zenodo.org/doi/10.5281/zenodo.10876430)
-[![DOI](https://img.shields.io/badge/Paper-PDF-red.svg)](<>)
+[![DOI](https://img.shields.io/badge/Paper-PDF-red.svg)]()
 
 - This repo trains an agent with a GNN that interacts with the [RoomEnv-v2](https://github.com/humemai/room-env)
 - The HumemAI-Unified agent is an upgrade from [HumemAI](https://github.com/humemai/agent-room-env-v2-lstm)
@@ -21,11 +21,11 @@
 
 ## RoomEnv-v2
 
-| An illustration of a hidden state $s\_{t}$ (in white) and partial observation $o\_{t}$ (in gray). |
+| An illustration of a hidden state $s_{t}$ (in white) and partial observation $o_{t}$ (in gray). |
 | :---------------------------------------------------------------------------------------------: |
 |                              ![](./figures/room-layout-xl-gnn.png)                              |
 
-| A hidden state $s\_{t}$ (in white) and partial observation $o\_{t}$ (in gray) represented as a KG. |
+| A hidden state $s_{t}$ (in white) and partial observation $o_{t}$ (in gray) represented as a KG. |
 | :----------------------------------------------------------------------------------------------: |
 |                             ![](./figures/room-layout-kg-xl-gnn.png)                             |
 
@@ -43,11 +43,11 @@
 | :-------------------------------------: |
 | ![](./figures/humemai-gnn-q-values.png) |
 
-| A forward-pass example of $\\text{StarE-GCN}$, $\\text{MLP}^{\\text{mm}}$, and $\\text{MLP}^{\\text{explore}}$ |
+| A forward-pass example of $\text{StarE-GCN}$, $\text{MLP}^{\text{mm}}$, and $\text{MLP}^{\text{explore}}$ |
 | :-------------------------------------------------------------------------------------------------------: |
 |                                   ![](./figures/gnn-explore-and-mm.png)                                   |
 
-| An example of the agent's (HumemAI-Unified with $capacity=192$) memory $\\bm{M}\_{t=99}$. |
+| An example of the agent's (HumemAI-Unified with $capacity=192$) memory $\bm{M}_{t=99}$. |
 | :-------------------------------------------------------------------------------------: |
 |                    ![](./figures/memory-systems-example-xl-gnn.png)                     |
 
@@ -89,7 +89,7 @@ inspire, and create. Any contributions you make are **greatly appreciated**.
 1. Push to the Branch (`git push origin feature/AmazingFeature`)
 1. Open a Pull Request
 
-## [Cite our paper](<>)
+## [Cite our paper]()
 
 ```bibtex
 
