@@ -8,8 +8,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn.functional as F
-from humemai.utils import (argmax, is_running_notebook, list_duplicates_of,
-                           write_pickle, write_yaml)
+from humemai.utils import (
+    argmax,
+    is_running_notebook,
+    list_duplicates_of,
+    write_pickle,
+    write_yaml,
+)
 from IPython.display import clear_output
 from tqdm.auto import tqdm
 
@@ -473,7 +478,13 @@ def save_final_results(
         "training_loss": training_loss,
     }
     write_yaml(results, os.path.join(default_root_dir, "results.yaml"))
-    write_yaml(q_values, os.path.join(default_root_dir, "q_values.yaml"))
+
+    q_values_list = {
+        key: {key_: [val__.tolist() for val__ in val_] for key_, val_ in val.items()}
+        for key, val in q_values.items()
+    }
+
+    write_yaml(q_values_list, os.path.join(default_root_dir, "q_values.yaml"))
     if save_the_agent:
         write_pickle(self, os.path.join(default_root_dir, "agent.pkl"))
 
