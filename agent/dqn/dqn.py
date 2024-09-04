@@ -1,34 +1,46 @@
-"""Agent that uses a GNN for its DQN, for the RoomEnv2 environment."""
+"""Learn memory management, exploration, and qa policies."""
 
 import datetime
 import os
 import shutil
 from copy import deepcopy
 from typing import Literal
+from glob import glob
 
 import gymnasium as gym
 import numpy as np
 import torch
 import torch.optim as optim
 from humemai.memory import LongMemory, MemorySystems, ShortMemory
-from humemai.utils import is_running_notebook, write_yaml
+from humemai.utils import is_running_notebook, write_yaml, read_yaml
 
-from ..policy import (answer_question, encode_all_observations, explore,
-                      manage_memory)
-from .nn import GNN
-from .utils import (ReplayBuffer, plot_results, save_final_results,
-                    save_states_q_values_actions, save_validation,
-                    select_action, target_hard_update, update_epsilon,
-                    update_model)
+from ..policy import (
+    answer_question,
+    encode_all_observations,
+    explore,
+    manage_memory,
+    manage_short,
+)
+from .nn import GNN, GNNBandit
+from .utils import (
+    ReplayBuffer,
+    plot_results,
+    save_final_results,
+    save_states_q_values_actions,
+    save_validation,
+    select_action,
+    target_hard_update,
+    update_epsilon,
+    update_model,
+)
 
 
 class DQNAgent:
     r"""DQN Agent interacting with environment.
 
-    This is an upgrade from https://github.com/humemai/agent-room-env-v2-lstm. The two
-    policies, i.e., memory management and exploration, are learned by a GNN at once!
-    The question-answering function is still hand-crafted. Potentially, this can be
-    learned by a contextual bandit algorithm.
+    This is an upgrade from https://github.com/humemai/agent-room-env-v2-gnn.
+    It aims to learn the question-answering function using a contextual bandit
+    algorithm.
 
     Based on https://github.com/Curt-Park/rainbow-is-all-you-need/
     """
@@ -36,18 +48,18 @@ class DQNAgent:
     def __init__(
         self,
         env_str: str = "room_env:RoomEnv-v2",
-        num_iterations: int = 10000,
-        replay_buffer_size: int = 1000,
+        num_iterations: int = 20000,
+        replay_buffer_size: int = 20000,
         warm_start: int = 32,
         batch_size: int = 32,
         target_update_interval: int = 10,
-        epsilon_decay_until: float = 10000,
+        epsilon_decay_until: float = 20000,
         max_epsilon: float = 1.0,
-        min_epsilon: float = 0.01,
+        min_epsilon: float = 0.1,
         gamma: dict = {"mm": 0.9, "explore": 0.9},
         learning_rate: int = 0.001,
         capacity: dict = {
-            "long": 12,
+            "long": 192,
             "short": 15,
         },
         pretrain_semantic: Literal[False, "include_walls", "exclude_walls"] = False,
@@ -84,11 +96,13 @@ class DQNAgent:
         intrinsic_explore_reward: float = 1.0,
         ddqn: bool = True,
         default_root_dir: str = "./training-results/",
-        explore_policy: Literal["random", "avoid_walls", "RL"] = "RL",
-        qa_function: str = "latest_strongest",
+        explore_policy: Literal["random", "avoid_walls", "RL", "neural"] = "neural",
+        qa_function: Literal["latest_strongest", "bandit", "llm"] = "bandit",
         mm_policy: Literal[
-            "random", "episodic", "semantic", "forget", "RL", "handcrafted"
-        ] = "RL",
+            "random", "episodic", "semantic", "forget", "RL", "handcrafted", "neural"
+        ] = "neural",
+        pretrained_path: str | None = None,
+        llm_params: dict | None = None,
         scale_reward: bool = False,
     ) -> None:
         r"""Initialization.
@@ -126,12 +140,13 @@ class DQNAgent:
             ddqn: whether to use double DQN
             default_root_dir: default root directory to save results
             explore_policy: exploration policy. Choose one of "random", "avoid_walls",
-                "RL".
-            qa_function: question answering policy Choose one of "episodic_semantic",
-                "random", or "neural". qa_function shouldn't be trained with RL. There is
-                no sequence of states / actions to learn from.
+                "RL", "neural".
+            qa_function: question answering policy Choose one of "latest_strongest",
+                "bandit", "llm".
             mm_policy: memory management policy. Choose one of "random", "episodic",
-                "semantic", "forget", "RL", or "handcrafted".
+                "semantic", "forget", "RL", "handcrafted", "neural".
+            pretrained_path: path to pretrained model
+            llm_params: parameters for the LLM
             scale_reward: whether to scale the reward
 
         """
@@ -148,8 +163,6 @@ class DQNAgent:
 
         self.env_str = env_str
         self.env_config = env_config
-        self.qa_function = qa_function
-        assert self.qa_function in ["random", "latest_strongest", "strongest_latest"]
         self.num_samples_for_results = num_samples_for_results
         self.validation_interval = validation_interval
         self.capacity = capacity
@@ -180,7 +193,14 @@ class DQNAgent:
         assert self.batch_size <= self.warm_start <= self.replay_buffer_size
 
         self.explore_policy = explore_policy
+        self.qa_function = qa_function
         self.mm_policy = mm_policy
+        self.pretrained_path = pretrained_path
+        self.llm_params = llm_params
+
+        if self.qa_function == "llm":
+            self._setup_llm(**self.llm_params)
+
         self.scale_reward = scale_reward
 
         self.action_mm2str = {0: "episodic", 1: "semantic", 2: "forget"}
@@ -196,7 +216,40 @@ class DQNAgent:
 
         self.init_memory_systems()
 
+        if self.mm_policy.lower() == "neural" or self.explore_policy.lower() == "neural":
+            assert self.pretrained_path is not None, "Pretrained model needed."
+            pretrained_params = read_yaml(
+                os.path.join(self.pretrained_path, "train.yaml")
+            )
+            pretrained_params = pretrained_params["dqn_params"]
+
+            pretrained_params["device"] = self.device
+            pretrained_params["entities"] = [
+                e for entities in self.env.unwrapped.entities.values() for e in entities
+            ]
+            pretrained_params["entities"] += [
+                str(i) for i in range(self.env.unwrapped.terminates_at + 2)
+            ]
+            pretrained_params["relations"] = (
+                self.env.unwrapped.relations
+                + [rel + "_inv" for rel in self.env.unwrapped.relations]
+                + self.memory_systems.qualifier_relations
+            )
+            self.pretrained_model = GNN(**pretrained_params)
+            pt_path = glob(os.path.join(self.pretrained_path, "*.pt"))[0]
+
+            self.pretrained_model.load_state_dict(torch.load(pt_path))
+
+            # freeze the pretrained model
+            self.pretrained_model.eval()
+            for param in self.pretrained_model.parameters():
+                param.requires_grad = False
+
+        else:
+            self.pretrained_model = None
+
         self.dqn_params = dqn_params
+
         self.dqn_params["device"] = self.device
         self.dqn_params["entities"] = [
             e for entities in self.env.unwrapped.entities.values() for e in entities
@@ -212,8 +265,8 @@ class DQNAgent:
             + [rel + "_inv" for rel in self.env.unwrapped.relations]
             + self.memory_systems.qualifier_relations
         )
-        self.dqn = GNN(**self.dqn_params)
-        self.dqn_target = GNN(**self.dqn_params)
+        self.dqn = GNNBandit(**self.dqn_params)
+        self.dqn_target = GNNBandit(**self.dqn_params)
         self.dqn_target.load_state_dict(self.dqn.state_dict())
         self.dqn_target.eval()
 
@@ -226,6 +279,12 @@ class DQNAgent:
             "test": {"mm": [], "explore": []},
         }
         self._save_number_of_parameters()
+
+    def _setup_llm(self, **kwargs) -> None:
+        r"""Setup the LLM model."""
+        from ..llm import Llm
+
+        self.llm = Llm(**kwargs)
 
     def _create_directory(self, params_to_save: dict) -> None:
         r"""Create the directory to store the results.
@@ -337,21 +396,30 @@ class DQNAgent:
                 intrinsic_explore_reward = 0
 
         else:
-            a_explore = explore(self.memory_systems, self.explore_policy)
-            a_explore = np.array(self.action_explore2int[a_explore])
+            a_explore = explore(
+                self.memory_systems,
+                self.explore_policy,
+                self.action_explore2int,
+                nn=self.pretrained_model,
+            )
             # Create dummy Q-values
             q_explore = np.zeros((1, len(self.action_explore2str)))
             intrinsic_explore_reward = 0
 
         # 2. question answering
-        answers = [
-            answer_question(
-                self.memory_systems,
-                self.qa_function,
-                question,
-            )
-            for question in self.observations["questions"]
-        ]
+        if self.qa_function == "bandit":
+            raise NotImplementedError("Bandit QA function is not implemented yet.")
+
+        else:
+            answers = [
+                answer_question(
+                    self.memory_systems,
+                    self.qa_function,
+                    question,
+                    self.llm if self.qa_function == "llm" else None,
+                )
+                for question in self.observations["questions"]
+            ]
 
         # 3. manage memory
         if self.mm_policy.lower() == "rl":
@@ -363,25 +431,12 @@ class DQNAgent:
                 policy_type="mm",
             )
         else:
-            a_mm = []
-            if self.mm_policy == "handcrafted":
-                for mem_short in self.memory_systems.short:
-                    if mem_short[0] == "agent":
-                        a_mm.append(0)
-                    elif "ind" in mem_short[0] or "dep" in mem_short[0]:
-                        a_mm.append(0)
-                    elif "sta" in mem_short[0]:
-                        a_mm.append(1)
-                    elif "room" in mem_short[0] and "room" in mem_short[2]:
-                        a_mm.append(1)
-                    elif "wall" in mem_short[2]:
-                        a_mm.append(2)
-                    else:
-                        raise ValueError("something is wrong")
-            else:
-                raise NotImplementedError(f"{self.mm_policy} is not implemented.")
-
-            a_mm = np.array(a_mm)
+            a_mm = manage_short(
+                self.memory_systems,
+                self.mm_policy,
+                self.action_mm2int,
+                nn=self.pretrained_model,
+            )
             # Create dummy Q-values
             q_mm = np.zeros((len(self.memory_systems.short), len(self.action_mm2str)))
 
