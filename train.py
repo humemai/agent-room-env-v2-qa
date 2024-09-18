@@ -1,12 +1,16 @@
+"""Run training for DQN agent with specific parameters."""
+
 import argparse
-import os
-import random
-import itertools
-from tqdm.auto import tqdm
 from agent.dqn import DQNAgent
 
 
-def main(test_seed, capacity_max):
+def main(test_seed, capacity_max) -> None:
+    """Run training.
+
+    Args:
+        test_seed (int): Seed for testing.
+        capacity_max (int): Maximum capacity for the agent.
+    """
     room_size = "xl-different-prob"
     terminates_at = 99
     num_iterations = (terminates_at + 1) * 1

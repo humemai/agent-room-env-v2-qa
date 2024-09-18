@@ -412,7 +412,10 @@ def answer_question(
         )
 
         answer = llm.talk_to_llm(prompt)
-        answer = re.search(r"room_\S+(?=\.)", answer).group(0)
+        try:
+            answer = re.search(r"room_\S+(?=\.)", answer).group(0)
+        except AttributeError:
+            answer = None
 
         return answer
 
