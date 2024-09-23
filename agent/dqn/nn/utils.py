@@ -244,6 +244,7 @@ def process_graph(
             )
     if agent_entity_idx is None:
         raise ValueError("No agent entity found in the sample")
+
     return (
         entities,
         relations,

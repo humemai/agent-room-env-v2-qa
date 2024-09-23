@@ -21,7 +21,8 @@ from ..policy import (
     manage_memory,
     manage_short,
 )
-from .nn import GNN, GNNBandit
+from ..utils import is_dict_subset
+from .nn import GNN
 from .utils import (
     ReplayBuffer,
     plot_results,
@@ -101,6 +102,7 @@ class DQNAgent:
         mm_policy: Literal[
             "random", "episodic", "semantic", "forget", "RL", "handcrafted", "neural"
         ] = "neural",
+        qa_entities: Literal["all", "room"] = "room",
         pretrained_path: str | None = None,
         llm_params: dict | None = None,
         scale_reward: bool = False,
@@ -145,6 +147,7 @@ class DQNAgent:
                 "bandit", "llm".
             mm_policy: memory management policy. Choose one of "random", "episodic",
                 "semantic", "forget", "RL", "handcrafted", "neural".
+            qa_entities: entities to consider for QA. Choose one of "all", "room".
             pretrained_path: path to pretrained model
             llm_params: parameters for the LLM
             scale_reward: whether to scale the reward
@@ -195,6 +198,7 @@ class DQNAgent:
         self.explore_policy = explore_policy
         self.qa_function = qa_function
         self.mm_policy = mm_policy
+        self.qa_entities = qa_entities
         self.pretrained_path = pretrained_path
         self.llm_params = llm_params
 
@@ -216,37 +220,18 @@ class DQNAgent:
 
         self.init_memory_systems()
 
-        if self.mm_policy.lower() == "neural" or self.explore_policy.lower() == "neural":
+        if (
+            self.mm_policy.lower() == "neural"
+            or self.explore_policy.lower() == "neural"
+        ):
             assert self.pretrained_path is not None, "Pretrained model needed."
             pretrained_params = read_yaml(
                 os.path.join(self.pretrained_path, "train.yaml")
-            )
-            pretrained_params = pretrained_params["dqn_params"]
+            )["dqn_params"]
 
-            pretrained_params["device"] = self.device
-            pretrained_params["entities"] = [
-                e for entities in self.env.unwrapped.entities.values() for e in entities
-            ]
-            pretrained_params["entities"] += [
-                str(i) for i in range(self.env.unwrapped.terminates_at + 2)
-            ]
-            pretrained_params["relations"] = (
-                self.env.unwrapped.relations
-                + [rel + "_inv" for rel in self.env.unwrapped.relations]
-                + self.memory_systems.qualifier_relations
-            )
-            self.pretrained_model = GNN(**pretrained_params)
-            pt_path = glob(os.path.join(self.pretrained_path, "*.pt"))[0]
-
-            self.pretrained_model.load_state_dict(torch.load(pt_path))
-
-            # freeze the pretrained model
-            self.pretrained_model.eval()
-            for param in self.pretrained_model.parameters():
-                param.requires_grad = False
-
-        else:
-            self.pretrained_model = None
+            assert is_dict_subset(
+                pretrained_params, dqn_params
+            ), "Pretrained params mismatch."
 
         self.dqn_params = dqn_params
 
@@ -265,13 +250,34 @@ class DQNAgent:
             + [rel + "_inv" for rel in self.env.unwrapped.relations]
             + self.memory_systems.qualifier_relations
         )
-        self.dqn = GNNBandit(**self.dqn_params)
-        self.dqn_target = GNNBandit(**self.dqn_params)
+        self.dqn_params["pretrained_path"] = self.pretrained_path
+
+        if self.qa_entities == "all":
+
+            self.dqn_params["qa_entities"] = [
+                e for entities in self.env.unwrapped.entities.values() for e in entities
+            ]
+
+        else:
+            assert self.qa_entities == "room"
+
+            self.dqn_params["qa_entities"] = [
+                e
+                for entities in self.env.unwrapped.entities.values()
+                for e in entities
+                if "room" in e
+            ]
+
+        self.dqn = GNN(**self.dqn_params)
+        self.dqn_target = GNN(**self.dqn_params)
         self.dqn_target.load_state_dict(self.dqn.state_dict())
         self.dqn_target.eval()
 
         # optimizer
-        self.optimizer = optim.Adam(list(self.dqn.parameters()), lr=self.learning_rate)
+        self.optimizer = optim.Adam(
+            filter(lambda p: p.requires_grad, self.dqn.parameters()),
+            lr=self.learning_rate,
+        )
 
         self.q_values = {
             "train": {"mm": [], "explore": []},
@@ -306,6 +312,7 @@ class DQNAgent:
                 "mlp_explore": sum(
                     p.numel() for p in self.dqn.mlp_explore.parameters()
                 ),
+                "mlp_qa": sum(p.numel() for p in self.dqn.mlp_qa.parameters()),
                 "entity_embeddings": self.dqn.entity_embeddings.numel(),
                 "relation_embeddings": self.dqn.relation_embeddings.numel(),
             },
@@ -400,7 +407,7 @@ class DQNAgent:
                 self.memory_systems,
                 self.explore_policy,
                 self.action_explore2int,
-                nn=self.pretrained_model,
+                nn=self.dqn,
             )
             # Create dummy Q-values
             q_explore = np.zeros((1, len(self.action_explore2str)))
@@ -435,7 +442,7 @@ class DQNAgent:
                 self.memory_systems,
                 self.mm_policy,
                 self.action_mm2int,
-                nn=self.pretrained_model,
+                nn=self.dqn,
             )
             # Create dummy Q-values
             q_mm = np.zeros((len(self.memory_systems.short), len(self.action_mm2str)))

@@ -226,3 +226,27 @@ def positional_encoding(
         return torch.from_numpy(pos_enc)
 
     return pos_enc
+
+
+def is_dict_subset(dict0: dict, dict1: dict) -> bool:
+    """
+    Assert that dictionary A is a subset of dictionary B, meaning all key-value pairs
+    in A must exist in B with the same values.
+
+    Args:
+        dict0 (dict): The subset dictionary.
+        dict1 (dict): The superset dictionary.
+
+    Returns:
+        bool: True if dict A is a subset of dict B; otherwise False.
+    """
+    for key, value in dict0.items():
+        if key not in dict1:
+            print(f"Key '{key}' not found in dict B.")
+            return False
+        if dict1[key] != value:
+            print(f"Value for key '{key}' does not match. A: {value}, B: {dict1[key]}")
+            return False
+
+    print("Assertion passed: dict A is part of dict B.")
+    return True
