@@ -1,6 +1,7 @@
-import transformers
-import torch
 from typing import Literal
+
+import torch
+import transformers
 
 
 class Llm:

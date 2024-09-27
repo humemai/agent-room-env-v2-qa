@@ -1,7 +1,7 @@
 # Agent for RoomEnv-v2
 
 [![DOI](https://zenodo.org/badge/845897921.svg)](https://zenodo.org/doi/10.5281/zenodo.13358323)
-[![DOI](https://img.shields.io/badge/Paper-PDF-red.svg)]()
+[![DOI](https://img.shields.io/badge/Paper-PDF-red.svg)](<>)
 
 - This repo trains an agent with a GNN that interacts with the [RoomEnv-v2](https://github.com/humemai/room-env)
 - HumemAI-QA learns a question answering function with contextual bandit.
@@ -58,7 +58,7 @@ inspire, and create. Any contributions you make are **greatly appreciated**.
 1. Push to the Branch (`git push origin feature/AmazingFeature`)
 1. Open a Pull Request
 
-## [Cite our paper]()
+## [Cite our paper](<>)
 
 ```bibtex
 

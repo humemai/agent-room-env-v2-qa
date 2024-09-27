@@ -4,12 +4,11 @@ The trained neural network policies are not implemented yet.
 """
 
 import random
-from typing import Literal
 import re
+from typing import Literal
 
 import numpy as np
 import torch
-
 from humemai.memory import MemorySystems, ShortMemory
 
 

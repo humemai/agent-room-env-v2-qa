@@ -1,8 +1,8 @@
 """A lot copied from https://github.com/migalkin/StarE"""
 
 import os
-from typing import Literal
 from glob import glob
+from typing import Literal
 
 import numpy as np
 import torch
@@ -62,6 +62,7 @@ class GNN(torch.nn.Module):
         mlp_params: dict = {"num_hidden_layers": 2, "dueling_dqn": True},
         rotational_for_relation: bool = True,
         pretrained_path: str | None = None,
+        use_raw_embeddings_for_qa: bool = False,
         device: str = "cpu",
     ) -> None:
         """Initialize the GNN model.
@@ -77,6 +78,7 @@ class GNN(torch.nn.Module):
             rotational_for_relation: Whether to use rotational embeddings for relations
             pretrained_path: The path to the pretrained model. This is only for loading
                 GNN, mm, and explore models. The qa model is not loaded.
+            use_raw_embeddings_for_qa: Whether to use raw embeddings for QA policy
             device: The device to use. Default is "cpu".
 
         """
@@ -89,6 +91,7 @@ class GNN(torch.nn.Module):
         self.mlp_params = mlp_params
         self.rotational_for_relation = rotational_for_relation
         self.pretrained_path = pretrained_path
+        self.use_raw_embeddings_for_qa = use_raw_embeddings_for_qa
         self.device = device
         self.embedding_dim = gcn_layer_params["embedding_dim"]
 
@@ -181,7 +184,7 @@ class GNN(torch.nn.Module):
         )
         self.mlp_qa = MLP(
             n_actions=1,
-            input_size=self.embedding_dim,
+            input_size=self.embedding_dim * 3,  # [head, relation, tail]
             hidden_size=self.embedding_dim,
             device=device,
             num_hidden_layers=mlp_params["num_hidden_layers"],
@@ -296,14 +299,14 @@ class GNN(torch.nn.Module):
                 agent_entity_idx,
             ) = process_graph(sample)
 
-            for j, entity in enumerate(entities):
+            for entity in entities:
                 entity_embeddings_batch.append(
                     self.entity_embeddings[self.entity_to_idx[entity]]
                 )
                 entities_used_sample.append(entity)
             entities_used.append(entities_used_sample)
 
-            for j, relation in enumerate(relations):
+            for relation in relations:
                 relation_embeddings_batch.append(
                     self.relation_embeddings[self.relation_to_idx[relation]]
                 )
@@ -416,7 +419,7 @@ class GNN(torch.nn.Module):
         data: np.ndarray,
         policy_type: Literal["mm", "explore", "qa"],
         questions: list[list[list[str]]] = None,
-    ) -> list[torch.Tensor]:
+    ) -> list[torch.Tensor] | list[list[list[list]]]:
         """Forward pass of the GNN model.
 
         Args:
@@ -430,71 +433,15 @@ class GNN(torch.nn.Module):
                 "qa". An example question is ["sta_000", "atlocation", "?"].
 
         Returns:
-            The Q-values, with a batch dimension. The number of elements in the list is
-            the number of actions in the sample.
+            Q-values.
+            As for "mm" and "explore it returns the Q-values, with a batch dimension.
+            The number of elements in the list is the number of actions in the sample.
+
+            For "qa", it returns the rewards for each question. The shape is
+            [batch_size, num_questions, num_tails]. The number of questions and tails is
+            different for each sample.
 
         """
-
-        data = np.array(
-            [
-                list(
-                    [
-                        ["agent", "atlocation", "room_000", {"current_time": 0}],
-                        ["room_000", "east", "room_001", {"current_time": 0}],
-                        ["dep_001", "atlocation", "room_000", {"current_time": 0}],
-                        ["room_000", "west", "wall", {"current_time": 0}],
-                        ["dep_007", "atlocation", "room_000", {"current_time": 0}],
-                        ["room_000", "north", "wall", {"current_time": 0}],
-                        ["room_000", "south", "room_004", {"current_time": 0}],
-                    ]
-                ),
-                list(
-                    [
-                        ["room_001", "south", "room_005", {"current_time": 1}],
-                        ["agent", "atlocation", "room_001", {"current_time": 1}],
-                        ["room_001", "west", "room_000", {"current_time": 1}],
-                        ["room_001", "north", "wall", {"current_time": 1}],
-                        ["room_001", "east", "wall", {"current_time": 1}],
-                        ["dep_007", "atlocation", "room_000", {"timestamp": [0]}],
-                        ["room_000", "north", "wall", {"strength": 1}],
-                    ]
-                ),
-                list(
-                    [
-                        ["room_005", "east", "room_006", {"current_time": 2}],
-                        ["agent", "atlocation", "room_005", {"current_time": 2}],
-                        ["room_005", "north", "room_001", {"current_time": 2}],
-                        ["room_005", "south", "wall", {"current_time": 2}],
-                        ["room_005", "west", "room_004", {"current_time": 2}],
-                        ["dep_007", "atlocation", "room_000", {"timestamp": [0]}],
-                        ["room_000", "north", "wall", {"strength": 1}],
-                        ["agent", "atlocation", "room_001", {"strength": 1}],
-                        ["room_001", "west", "room_000", {"timestamp": [1]}],
-                        ["room_001", "north", "wall", {"strength": 1}],
-                        ["room_001", "east", "wall", {"timestamp": [1]}],
-                    ]
-                ),
-                list(
-                    [
-                        ["agent", "atlocation", "room_006", {"current_time": 3}],
-                        ["room_006", "north", "wall", {"current_time": 3}],
-                        ["sta_004", "atlocation", "room_006", {"current_time": 3}],
-                        ["room_006", "south", "room_010", {"current_time": 3}],
-                        ["room_006", "west", "room_005", {"current_time": 3}],
-                        ["room_006", "east", "room_007", {"current_time": 3}],
-                        ["dep_007", "atlocation", "room_000", {"timestamp": [0]}],
-                        ["room_000", "north", "wall", {"strength": 1}],
-                        ["agent", "atlocation", "room_001", {"strength": 1}],
-                        ["room_001", "west", "room_000", {"timestamp": [1]}],
-                        ["room_001", "north", "wall", {"strength": 1}],
-                        ["room_001", "east", "wall", {"timestamp": [1]}],
-                        ["room_005", "east", "room_006", {"timestamp": [2]}],
-                        ["room_005", "north", "room_001", {"strength": 1}],
-                    ]
-                ),
-            ],
-            dtype=object,
-        )
         (
             entity_embeddings,
             relation_embeddings,
@@ -507,8 +454,6 @@ class GNN(torch.nn.Module):
             entities_used,
             relations_used,
         ) = self.process_batch(data)
-
-        import pdb; pdb.set_trace()
 
         for layer_ in self.gcn_layers:
             if "stare" in self.gcn_type:
@@ -545,16 +490,16 @@ class GNN(torch.nn.Module):
 
             triple = torch.stack(triple, dim=0)
 
-            q_mm_ = self.mlp_mm(triple)
+            q_mm_batch = self.mlp_mm(triple)
 
             # restore the original batch dimension
             q_mm = [
-                q_mm_[start : start + num]
+                q_mm_batch[start : start + num]
                 for start, num in zip(
                     num_short_memories.cumsum(0).roll(1), num_short_memories
                 )
             ]
-            q_mm[0] = q_mm_[: num_short_memories[0]]
+            q_mm[0] = q_mm_batch[: num_short_memories[0]]
 
             return q_mm
 
@@ -566,65 +511,114 @@ class GNN(torch.nn.Module):
 
             node = torch.stack(node, dim=0)
 
-            q_explore = self.mlp_explore(node)
+            q_explore_batch = self.mlp_explore(node)
 
             # restore the original batch dimension
-            q_explore = [row.unsqueeze(0) for row in list(q_explore.unbind(dim=0))]
+            q_explore = [
+                row.unsqueeze(0) for row in list(q_explore_batch.unbind(dim=0))
+            ]
 
             return q_explore
 
         elif policy_type == "qa":
             assert (
-                len(questions) == len(data) == len(entities_used)
-            ), "the batch size doesn't match."
-
-            tensor_qa = []
-
-            offset = 0
-            for entities_, relations_, questions_ in zip(entities_used, relations_used, questions):
-                entity_embeddings_ = entity_embeddings[offset : offset + len(entities_)]
-                relation_embeddings_ = relation_embeddings[
-                    offset : offset + len(relations_)
-                ]
-
-                str2embedding = {}
-                for i, entity_str in enumerate(entities_):
-                    if entity_str in self.qa_entities:
-                        str2embedding[entity_str] = entity_embeddings_[i]
-
-                offset += len(entities_)
+                len(questions) == len(data) == len(entities_used) == len(relations_used)
+            ), f"{len(questions)}, {len(data)}, {len(entities_used)}, {len(relations_used)} the batch size doesn't match"
 
             # Step 1: Calculate the cumulative offsets
             entity_offsets = [0]  # Initialize with 0 as the first offset
             relation_offsets = [0]
 
-            for entities_ in entities_used:
-                entity_offsets.append(entity_offsets[-1] + len(entities_))
+            for entities in entities_used:
+                entity_offsets.append(entity_offsets[-1] + len(entities))
 
-            for relations_ in relations_used:
-                relation_offsets.append(relation_offsets[-1] + len(relations_))
+            for relations in relations_used:
+                relation_offsets.append(relation_offsets[-1] + len(relations))
 
-            # Step 2: Use precomputed offsets in the loop
-            for idx, (entities_, relations_, questions_) in enumerate(zip(entities_used, relations_used, questions)):
-                # Use the precomputed offsets
-                entity_embeddings_ = entity_embeddings[entity_offsets[idx]:entity_offsets[idx + 1]]
-                relation_embeddings_ = relation_embeddings[relation_offsets[idx]:relation_offsets[idx + 1]]
+            qa_tensor = []  # dimension is [N, embedding_dim]
+            qa_triples = []  # batch_dimension
 
-                str2embedding = {}
-                for i, entity_str in enumerate(entities_):
-                    if entity_str in self.qa_entities:
-                        str2embedding[entity_str] = entity_embeddings_[i]
+            for idx, (entities, relations, questions_) in enumerate(
+                zip(entities_used, relations_used, questions)
+            ):
+                qa_triples_ = []  # num_question dim
+                for question in questions_:
 
+                    head_str = question[0]
+                    relation_str = question[1]
 
-            #     pass
+                    if head_str in entities and not self.use_raw_embeddings_for_qa:
+                        head_tensor = entity_embeddings[
+                            entity_offsets[idx] + entities.index(head_str)
+                        ]
+                    else:
+                        head_tensor = self.entity_embeddings[
+                            self.entity_to_idx[head_str]
+                        ]
 
-            # num_entities_per_sample = [len(list_) for list_ in entities_used]
+                    if relation_str in relations and not self.use_raw_embeddings_for_qa:
+                        relation_tensor = relation_embeddings[
+                            relation_offsets[idx] + relations.index(relation_str)
+                        ]
+                    else:
+                        relation_tensor = self.relation_embeddings[
+                            self.relation_to_idx[relation_str]
+                        ]
 
-            # for list_ in entities_used:
-            #     for dict_ in list_:
-            #         for entity, embedding in dict_.items():
-            #             if entity in self.qa_entities:
-            #                 entity_tensor.append(embedding)
+                    qa_triples__ = []  # num_entities dim
+
+                    for tail_str in entities:
+                        if tail_str in self.qa_entities:
+                            qa_triples__.append(
+                                [
+                                    head_str,
+                                    relation_str,
+                                    tail_str,
+                                ]
+                            )
+
+                            if self.use_raw_embeddings_for_qa:
+                                tail_tensor = self.entity_embeddings[
+                                    self.entity_to_idx[tail_str]
+                                ]
+
+                            else:
+                                tail_tensor = entity_embeddings[
+                                    entity_offsets[idx] + entities.index(tail_str)
+                                ]
+
+                            qa_tensor.append(
+                                torch.cat(
+                                    [head_tensor, relation_tensor, tail_tensor], dim=0
+                                )
+                            )
+                    qa_triples_.append(qa_triples__)
+                qa_triples.append(qa_triples_)
+
+            qa_tensor = torch.stack(qa_tensor, dim=0)
+            q_qa_batch = self.mlp_qa(qa_tensor)  # dimension is [N, 1]
+
+            # Apply sigmoid after the MLP
+            q_qa_batch = torch.sigmoid(q_qa_batch)
+
+            # restore the original batch, num_questions, num_tails dimension
+            count = 0
+
+            q_qa = []
+            for entities, questions_ in zip(entities_used, questions):
+                q_qa_ = []
+                for question in questions_:
+                    q_qa__ = []
+                    for tail_str in entities:
+                        if tail_str in self.qa_entities:
+                            q_qa__.append(q_qa_batch[count])
+                            count += 1
+                    q_qa_.append(
+                        torch.cat(q_qa__)
+                    )  # Use torch.cat() to avoid extra dimension
+                q_qa.append(torch.stack(q_qa_, dim=0))
+
+            return q_qa, qa_triples
 
         else:
             raise ValueError(f"{policy_type} is not a valid policy type.")
