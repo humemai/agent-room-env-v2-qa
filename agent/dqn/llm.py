@@ -33,7 +33,7 @@ from .utils import (
 )
 
 
-class DQNAgent:
+class LLMAgent:
     r"""DQN Agent interacting with environment.
 
     This is an upgrade from https://github.com/humemai/agent-room-env-v2-gnn.
@@ -46,34 +46,12 @@ class DQNAgent:
     def __init__(
         self,
         env_str: str = "room_env:RoomEnv-v2",
-        num_iterations: int = 20000,
-        replay_buffer_size: int = 20000,
-        warm_start: int = 32,
-        batch_size: int = 32,
-        epsilon_decay_until: float = 20000,
-        max_epsilon: float = 1.0,
-        min_epsilon: float = 0.1,
-        learning_rate: int = 0.001,
         capacity: dict = {
             "long": 96,
             "short": 15,
         },
         semantic_decay_factor: float = 0.8,
-        dqn_params: dict = {
-            "gcn_layer_params": {
-                "type": "StarE",
-                "embedding_dim": 64,
-                "num_layers": 2,
-                "gcn_drop": 0.1,
-                "triple_qual_weight": 0.8,
-            },
-            "relu_between_gcn_layers": True,
-            "dropout_between_gcn_layers": False,
-            "mlp_params": {"num_hidden_layers": 2, "dueling_dqn": True},
-            "use_raw_embeddings_for_qa": False,
-        },
-        num_samples_for_results: dict = {"val": 5, "test": 10},
-        plotting_interval: int = 50,
+        num_samples_for_results: dict = {"test": 10},
         train_seed: int = 5,
         test_seed: int = 0,
         device: Literal["cpu", "cuda"] = "cpu",
@@ -88,49 +66,11 @@ class DQNAgent:
             "question_interval": 1,
             "include_walls_in_observations": True,
         },
-        ddqn: bool = True,
         default_root_dir: str = "./training-results/",
-        qa_function: Literal["latest_strongest", "bandit", "llm"] = "bandit",
-        qa_entities: Literal["all", "room"] = "room",
         pretrained_path: str | None = None,
         llm_params: dict | None = None,
     ) -> None:
-        r"""Initialization.
-
-        Args:
-            env_str: environment string. This has to be "room_env:RoomEnv-v2"
-            num_iterations: number of iterations to train
-            replay_buffer_size: size of replay buffer
-            warm_start: number of steps to fill the replay buffer, before training
-            batch_size: This is the amount of samples sampled from the replay buffer.
-            epsilon_decay_until: until which iteration to decay epsilon
-            max_epsilon: maximum epsilon
-            min_epsilon: minimum epsilon
-            learning_rate: learning rate for the optimizer
-            capacity: The capacity of each human-like memory systems
-            semantic_decay_factor: decay factor for the semantic memory system
-            dqn_params: parameters for the DQN
-            num_samples_for_results: The number of samples to validate / test the agent.
-            plotting_interval: interval to plot results
-            train_seed: seed for training
-            test_seed: seed for testing
-            device: This is either "cpu" or "cuda".
-            env_config: The configuration of the environment.
-                question_prob: The probability of a question being asked at every
-                    observation.
-                terminates_at: The maximum number of steps to take in an episode.
-                seed: seed for env
-                room_size: The room configuration to use. Choose one of "dev", "xxs",
-                    "xs", "s", "m", or "l".
-            ddqn: whether to use double DQN
-            default_root_dir: default root directory to save results
-            qa_function: question answering policy Choose one of "latest_strongest",
-                "bandit", "llm".
-            qa_entities: entities to consider for QA. Choose one of "all", "room".
-            pretrained_path: path to pretrained model
-            llm_params: parameters for the LLM
-
-        """
+        r"""Initialization."""
         params_to_save = deepcopy(locals())
         del params_to_save["self"]
         self.default_root_dir = os.path.join(
@@ -152,21 +92,8 @@ class DQNAgent:
         self.device = torch.device(device)
         print(f"Running on {self.device}")
 
-        self.ddqn = ddqn
         self.val_file_names = []
         self.is_notebook = is_running_notebook()
-        self.num_iterations = num_iterations
-        self.plotting_interval = plotting_interval
-
-        self.replay_buffer_size = replay_buffer_size
-        self.batch_size = batch_size
-        self.epsilon = max_epsilon
-        self.max_epsilon = max_epsilon
-        self.min_epsilon = min_epsilon
-        self.epsilon_decay_until = epsilon_decay_until
-        self.learning_rate = learning_rate
-        self.warm_start = warm_start
-        assert self.batch_size <= self.warm_start <= self.replay_buffer_size
 
         self.qa_function = qa_function
         self.qa_entities = qa_entities
@@ -345,7 +272,6 @@ class DQNAgent:
             ]
             # Create dummy Q-values
             q_qa = [np.zeros(1) for answer in answers]
-            a_qa = None
 
         # 3. manage memory
         a_mm = manage_short(
@@ -375,7 +301,6 @@ class DQNAgent:
         encode_all_observations(self.memory_systems, self.observations["room"])
 
         return (
-            answers,
             a_qa,
             q_qa,
             reward,
@@ -403,7 +328,6 @@ class DQNAgent:
             else:
                 state = deepcopy(self.memory_systems.get_working_memory().to_list())
                 (
-                    answers,
                     action,
                     q_value,
                     reward,
@@ -433,9 +357,7 @@ class DQNAgent:
                 done = False
             else:
                 state = deepcopy(self.memory_systems.get_working_memory().to_list())
-                (answers, action, q_value, reward, done, question) = self.step(
-                    greedy=False
-                )
+                (action, q_value, reward, done, question) = self.step(greedy=False)
                 score += sum(reward)
 
                 self.replay_buffer.store(*[state, action, reward, question])
@@ -451,32 +373,31 @@ class DQNAgent:
                     self.validate()
 
             else:
-                if self.qa_function != "llm":
-                    loss = update_model(
-                        replay_buffer=self.replay_buffer,
-                        optimizer=self.optimizer,
-                        device=self.device,
-                        dqn=self.dqn,
-                    )
+                loss = update_model(
+                    replay_buffer=self.replay_buffer,
+                    optimizer=self.optimizer,
+                    device=self.device,
+                    dqn=self.dqn,
+                )
 
-                    self.training_loss.append(loss)
+                self.training_loss.append(loss)
 
-                    # linearly decay epsilon
-                    self.epsilon = update_epsilon(
-                        self.epsilon,
-                        self.max_epsilon,
-                        self.min_epsilon,
-                        self.epsilon_decay_until,
-                    )
-                    self.epsilons.append(self.epsilon)
+                # linearly decay epsilon
+                self.epsilon = update_epsilon(
+                    self.epsilon,
+                    self.max_epsilon,
+                    self.min_epsilon,
+                    self.epsilon_decay_until,
+                )
+                self.epsilons.append(self.epsilon)
 
-                    # plotting & show training results
-                    if (
-                        self.iteration_idx == self.num_iterations
-                        or self.iteration_idx % self.plotting_interval == 0
-                    ):
+                # plotting & show training results
+                if (
+                    self.iteration_idx == self.num_iterations
+                    or self.iteration_idx % self.plotting_interval == 0
+                ):
 
-                        self.plot_results()
+                    self.plot_results()
 
                 if self.iteration_idx >= self.num_iterations:
                     break
@@ -508,9 +429,7 @@ class DQNAgent:
 
                 else:
                     state = deepcopy(self.memory_systems.get_working_memory().to_list())
-                    (answers, action, q_value, reward, done, question) = self.step(
-                        greedy=True
-                    )
+                    (action, q_value, reward, done, question) = self.step(greedy=True)
                     score += sum(reward)
 
                 if done:
@@ -570,8 +489,7 @@ class DQNAgent:
             self.default_root_dir,
         )
 
-        if self.qa_function != "llm":
-            self.plot_results()
+        self.plot_results()
         self.env.close()
         self.dqn.train()
 
